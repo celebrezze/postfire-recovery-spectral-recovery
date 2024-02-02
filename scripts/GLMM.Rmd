@@ -516,8 +516,7 @@ glmm.predictors <- mem.df.glmm %>%
 
 # omitted: canopy_cover, pct_recovery, hli, aspect
 
-glmm.predictors.zi <- glmm.predictors %>% 
-  select(-hli) # zero-inflated model selection was being finnicky with more than 6 variables for some reason...
+glmm.predictors.zi <- glmm.predictors
 
 glmm.int.predictors <- c('elevation', 'slope', 'postfire_ppt', 'postfire_tmean', 'postfire_vpdmax', 'relative_regrowth', 'postfire_fitted_slope', 'delta_nbr', 'dnbr')
 ```

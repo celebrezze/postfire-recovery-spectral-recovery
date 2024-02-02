@@ -5,8 +5,6 @@ date: "2023-11-24"
 output: html_document
 ---
 
-updated_main_analyses_and_figures was getting rather long and unruly, so I split it into three scripts -- one focused on EDA and cluster analyses, one on trailing edge vs. persistent forest, and one on climate and other scatterplots/regressions (this one)
-
 # Setup
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
