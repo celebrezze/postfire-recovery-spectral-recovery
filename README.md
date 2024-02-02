@@ -2,9 +2,14 @@
 
 This repository is intended to store data, figures, and scripts necessary for the analyses and visualizations for the text entitled *A fast spectral recovery does not necessarily indicate post-fire forest recovery* authored by Joe Celebrezze (email: celebrezze@ucsb.edu, personal email: joebrezze@gmail.com), Madeline Franz, Robert Andrus, Amanda Stahl, Michelle Steen-Adams, Arjan Meddens.
 
+------------------------------------------------------
+
 A brief note regarding large datasets: Datasets above 100MB in size could not be pushed to the GitHub repository, so certain scripts will not run without adding those datasets to the local drive (climate data, Egley NBR data, Landfire forest cover data, all fires severity). These scripts are *data_wrangling.Rmd* and *field_site_selection.Rmd*. That being said, all of the key scripts for analyses and visualization are able to be ran without this data (with a minor workaround for *clusters_and_eda.Rmd*).
 
+------------------------------------------------------
+
 Descriptions for each of the scripts:
+
 *climate_and_scatterplots.Rmd*: this contains comparisons between field data and climate data
 
 *clusters_and_eda.Rmd*: this contains some EDA figures and analyses and the bottom-up and top-down cluster analysis
@@ -27,4 +32,10 @@ Descriptions for each of the scripts:
 
 *trailing_edge.Rmd*: this contains all code to compare TE and non-TE forests; it is dependent on the chunk of GLMM code relating to TE vs. non-TE
 
-Closing remarks: I hope that this is enough information to make this code useful to whoever wants to use it and apply it to other research questions and the like. Feel free to contact me (Joe, see emails above) if needed and I will try to help with any of it. I try to make my code relatively clean, but this code was only used by me and therefore I did not explain much of the code line-by-line. Happy coding!
+------------------------------------------------------
+
+All of the figures (main figures, supplemental figures, extra figures) are currently in the GitHub repository and all (except for the field site selection figures) can be coded for in the scripts described above.
+
+------------------------------------------------------
+
+Closing remarks: I hope that this is enough information to make this code useful to whoever wants to use it and apply it to other research questions and the like. Feel free to *contact me* (Joe, see emails above) if needed and I will try to help with any of it. I try to make my code relatively clean, but this code was only used by me and therefore I did not explain much of the code line-by-line. **Happy coding!**
