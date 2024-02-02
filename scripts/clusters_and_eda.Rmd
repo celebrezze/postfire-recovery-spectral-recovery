@@ -485,15 +485,16 @@ diff.by.fire %>%
 
 ### Climate and Topography Normals
 #### Data Wrangling
+Because the PRSIM 30yr normals data was too large for me to push into GitHub from my local server, I had to pull in a csv file with the climate normals already combined with the clustered dataset (at the bottom of this chunk); I commented out the code to show how, if the data was available, the code ran prior to this workaround
 ```{r}
 # PRISM 30yr normals, 800m resolution
-precip.ras <- raster(here('data', 'climate', 'precip_30yr_normal', 'PRISM_ppt_30yr.asc'))
-tmean.ras <- raster(here('data', 'climate', 'tmean_30yr_normal', 'PRISM_tmean_30yr.asc'))
-vpdmax.ras <- raster(here('data', 'climate', 'vpdmax_30yr_normal', 'PRISM_vpdmax_30yr.asc'))
+#precip.ras <- raster(here('data', 'climate', 'precip_30yr_normal', 'PRISM_ppt_30yr.asc'))
+#tmean.ras <- raster(here('data', 'climate', 'tmean_30yr_normal', 'PRISM_tmean_30yr.asc'))
+#vpdmax.ras <- raster(here('data', 'climate', 'vpdmax_30yr_normal', 'PRISM_vpdmax_30yr.asc'))
 # Current CRS: +proj=longlat +datum=NAD83 +no_defs; needs to be changed to +proj=longlat +datum=WGS84 +no_defs
-precip.ras <- projectRaster(from = precip.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
-tmean.ras <- projectRaster(from = tmean.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
-vpdmax.ras <- projectRaster(from = vpdmax.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
+#precip.ras <- projectRaster(from = precip.ras, to = blue.mtns.ras, crs = #crs(postfire.regen))
+#tmean.ras <- projectRaster(from = tmean.ras, to = blue.mtns.ras, crs = #crs(postfire.regen))
+#vpdmax.ras <- projectRaster(from = vpdmax.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
 
 # Extract Climate Variables from Rasters to add to wide.cluster.df
 wide_cluster_coords <- wide.cluster.df[,c(9,10)] # define coordinates
@@ -501,23 +502,24 @@ wide_cluster_pts <- wide.cluster.df %>%
   select(Long, Lat) %>% 
   SpatialPointsDataFrame(coords = wide_cluster_coords, proj4string = crs(postfire.regen)) # transform to spatial points dataframe
 ## Precip ##
-precip_vals <- as.data.frame(extract(precip.ras, wide_cluster_pts))
-colnames(precip_vals)[1] <- 'precip' # renaming column
+#precip_vals <- as.data.frame(extract(precip.ras, wide_cluster_pts))
+#colnames(precip_vals)[1] <- 'precip' # renaming column
 ## Mean Temp ##
-tmean_vals <- as.data.frame(extract(tmean.ras, wide_cluster_pts))
-colnames(tmean_vals)[1] <- 'tmean' # renaming column
+#tmean_vals <- as.data.frame(extract(tmean.ras, wide_cluster_pts))
+#colnames(tmean_vals)[1] <- 'tmean' # renaming column
 ## Max VPD ##
-vpdmax_vals <- as.data.frame(extract(vpdmax.ras, wide_cluster_pts))
-colnames(vpdmax_vals)[1] <- 'vpdmax' # renaming column
+#vpdmax_vals <- as.data.frame(extract(vpdmax.ras, wide_cluster_pts))
+#colnames(vpdmax_vals)[1] <- 'vpdmax' # renaming column
 
 ## Postfire Regen Probability ##
-regen_vals <- as.data.frame(extract(postfire.regen, wide_cluster_pts))
-colnames(regen_vals)[1] <- 're-0gen_prob' # renaming column
+#regen_vals <- as.data.frame(extract(postfire.regen, wide_cluster_pts))
+#colnames(regen_vals)[1] <- 're-0gen_prob' # renaming column
 
 # Combining with wide.cluster.df
-climate_vals <- cbind(wide_cluster_coords, precip_vals, tmean_vals, vpdmax_vals, regen_vals)
-wide.cluster.df <- merge(wide.cluster.df, climate_vals, by = c('Long', 'Lat')) %>% 
-    distinct(x_y, .keep_all = T) # removing duplicates
+#climate_vals <- cbind(wide_cluster_coords, precip_vals, tmean_vals, vpdmax_vals, regen_vals)
+#wide.cluster.df <- merge(wide.cluster.df, climate_vals, by = c('Long', 'Lat')) %>% 
+    #distinct(x_y, .keep_all = T) # removing duplicates
+wide.cluster.df <- read.csv(here('data', 'processed_data', 'clusters.and.climate.normals.csv'))
 ```
 
 #### Stats Tests
@@ -1060,6 +1062,8 @@ field.cluster.df <- merge(field.df, main.df, by = c('grass.pct', 'shrub.pct', 'l
 ## Visualizations
 ```{r}
 # Lengthening dataframe, adding RdNBR, scaled recovery metric, and delta NBR (deviation from prefire conditions)
+colnames(field.cluster.df)[27:50] <- c(0:23)
+
 long.field.cluster.df <- field.cluster.df %>% 
   pivot_longer(cols = c(`0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`,
                         `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`, `20`,

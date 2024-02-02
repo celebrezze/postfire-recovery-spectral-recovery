@@ -5,6 +5,10 @@ date: "2023-05-03"
 output: html_document
 ---
 
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+THIS CODE WILL NOT RUN WITHOUT THE PROPER DATA DOWNLOADED ON YOUR LOCAL DRIVE. I COULD NOT PUSH ANYTHING TO GITHUB >100MB, SO CLIMATE DATA, LARGE NBR DATA (E.G., EGLEY), LANDFIRE DATA (forest cover) ARE NOT ON THE GITHUB REPOSITORY.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
 # Setup
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
