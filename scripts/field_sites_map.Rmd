@@ -1,0 +1,387 @@
+---
+title: "Sites Leaflet Map"
+author: "Joe Celebrezze"
+date: "2023-09-20"
+output: html_document
+---
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(here)
+here = here::here
+
+source(here("scripts", "source_code.R"))
+
+library(leaflet)
+library(colorspace)
+library(htmlwidgets)
+library(htmltools)
+library(webshot)
+```
+
+# Rasters
+```{r}
+School_mtbs <- raster(here('data', 'site_selection', 'school_severity.tif'))
+BC_mtbs <- raster(here('data', 'site_selection', 'bridge_creek_severity.tif'))
+HR_mtbs <- raster(here('data', 'site_selection', 'hash_rock_severity.tif'))
+Egley_mtbs <- raster(here('data', 'site_selection', 'egley_severity.tif'))
+Easy_mtbs <- raster(here('data', 'site_selection', 'easy_severity.tif'))
+Calamity_mtbs <- raster(here('data', 'site_selection', 'calamity_severity.tif'))
+Flagtail_mtbs <- raster(here('data', 'site_selection', 'flagtail_severity.tif'))
+Wheeler_mtbs <- raster(here('data', 'site_selection', 'wheeler_severity.tif'))
+```
+
+## Wrangling
+```{r}
+Egley_mtbs[Egley_mtbs < 1] <- NA # removing white box
+```
+
+
+# Field Data
+```{r}
+field.cluster.df <- read.csv(here('data', 'processed_data', 'field.cluster.df.csv'))
+```
+
+# Leaflet Maps
+## All Fires
+```{r}
+pal <- colorFactor(c('black', 'gray70'), domain = c(1,2))
+severity.pal <- colorNumeric(c("#FCE690", "#FFAB7D", '#E65441', '#751B00', '#4A7C59'), values(Egley_mtbs),
+  na.color = "transparent")
+
+# former increased greenness: '#2F824A', former unburned to low: #D0F1BF
+
+north.arrow <- makeIcon(here('data', 'blue_mtns_misc', 'north.arrow.jpg'), iconWidth = 28, iconHeight = 38)
+
+sites.map <- leaflet() %>% 
+  setView(lat = 44.8,lng = -119, zoom = 8.4) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(School_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(BC_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(HR_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(Easy_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(Egley_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(Wheeler_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(Calamity_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addRasterImage(Flagtail_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addLabelOnlyMarkers(
+    lng = -118.84, lat = 45.1,
+    label = "Bridge Creek",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>% 
+  addLabelOnlyMarkers(
+    lng = -118.73, lat = 43.95,
+    label = "Calamity",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -118.46, lat = 44.44,
+    label = "Easy",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -119.3, lat = 43.71,
+    label = "Egley",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -119.13, lat = 44.2,
+    label = "Flagtail",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -117.59, lat = 46.19,
+    label = "School",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -120.57, lat = 44.43,
+    label = "Hash Rock",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -119.95, lat = 44.85,
+    label = "Wheeler Point",
+    labelOptions = labelOptions(noHide = T, textsize = "15px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 43.57,label = "121°W",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -120, lat = 43.57,label = "120°W",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -119, lat = 43.57,label = "119°W",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -118, lat = 44.38,label = "118°W",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 44,label = "44°N",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 44.5,label = "44.5°N",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 45,label = "45°N",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 45.5,label = "45.5°N",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 46,label = "46°N",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addLabelOnlyMarkers(lng = -121, lat = 46.5,label = "46.5°N",
+    labelOptions = labelOptions(noHide = T, textsize = "10px", textOnly = T)) %>%
+  addMiniMap(
+    tiles = providers$Stadia.StamenToner,
+    position = 'bottomright', 
+    width = 200, height = 200,
+    toggleDisplay = FALSE, zoomLevelOffset = -6.8) %>% 
+  addScaleBar(position = 'bottomright') %>% 
+  addMarkers(lng = -117.58, lat = 44.43, icon = north.arrow)
+sites.map
+
+saveWidget(sites.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'site_map.png'),
+        cliprect = "viewport")
+
+saveWidget(sites.map, file = here('figures', 'maps', 'Field.Plot.Map.html'))
+```
+
+### Egley
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 17, iconHeight = 15.5) # Making icon for field site points
+
+egley.map <- leaflet() %>% 
+  setView(lat = 43.71,lng = -119.5, zoom = 10.3) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(Egley_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>% 
+#  addCircleMarkers(data = field.cluster.df, lng = field.cluster.df$Long, lat = field.cluster.df$Lat,
+#                   radius = 4.75,
+ #                  fillColor = '#FFFF00',
+  #                 color = 'black',
+   #                stroke = F, fillOpacity = 1,
+    #               group = 'Field Sites') %>% 
+  addLabelOnlyMarkers(
+    lng = -119.43, lat = 43.91,
+    label = "Egley",
+    labelOptions = labelOptions(noHide = T, textsize = "38px", textOnly = T))
+egley.map
+
+saveWidget(egley.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'egley_map.png'),
+        cliprect = "viewport")
+
+rad <- 1.65
+ht <- 0.912
+lab <- 3.230769
+```
+
+### School
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 17.7, iconHeight = 16.1) # Making icon for field site points
+
+school.map <- leaflet() %>% 
+  setView(lat = 46.25,lng = -117.59, zoom = 10.7) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(School_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -117.58, lat = 46.367,
+    label = "School",
+    labelOptions = labelOptions(noHide = T, textsize = "35px", textOnly = T))
+school.map
+
+saveWidget(school.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'school_map.png'),
+        cliprect = "viewport")
+```
+
+
+### Bridge Creek
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 19, iconHeight = 17.3) # Making icon for field site points
+
+bc.map <- leaflet() %>% 
+  setView(lat = 45.05,lng = -118.95, zoom = 11.5) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(BC_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -118.91, lat = 45.085,
+    label = "Bridge Creek",
+    labelOptions = labelOptions(noHide = T, textsize = "37px", textOnly = T))
+bc.map
+
+saveWidget(bc.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'bc_map.png'),
+        cliprect = "viewport")
+```
+
+### Easy
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 19.1, iconHeight = 17.4) # Making icon for field site points
+
+easy.map <- leaflet() %>% 
+  setView(lat = 44.48,lng = -118.46, zoom = 11.6) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(Easy_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -118.512, lat = 44.525,
+    label = "Easy",
+    labelOptions = labelOptions(noHide = T, textsize = "37px", textOnly = T))
+easy.map
+
+saveWidget(easy.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'easy_map.png'),
+        cliprect = "viewport")
+```
+
+### Hash Rock
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 21, iconHeight = 19.15) # Making icon for field site points
+
+hr.map <- leaflet() %>% 
+  setView(lat = 44.45,lng = -120.54, zoom = 11.5) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(HR_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -120.48, lat = 44.52,
+    label = "Hash Rock",
+    labelOptions = labelOptions(noHide = T, textsize = "42px", textOnly = T))
+hr.map
+
+saveWidget(hr.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'hr_map.png'),
+        cliprect = "viewport")
+```
+
+### Flagtail
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 20, iconHeight = 18.2) # Making icon for field site points
+
+fl.map <- leaflet() %>% 
+  setView(lat = 44.18,lng = -119.15, zoom = 12.1) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(Flagtail_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -119.134, lat = 44.22,
+    label = "Flagtail",
+    labelOptions = labelOptions(noHide = T, textsize = "39px", textOnly = T)) 
+fl.map
+
+saveWidget(fl.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'flagtail_map.png'),
+        cliprect = "viewport")
+```
+
+### Wheeler Point
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 19.8, iconHeight = 18.1) # Making icon for field site points
+
+wh.map <- leaflet() %>% 
+  setView(lat = 44.91,lng = -119.9, zoom = 12) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>%
+  addRasterImage(Wheeler_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -119.82, lat = 44.985,
+    label = "Wheeler Point",
+    labelOptions = labelOptions(noHide = T, textsize = "45px", textOnly = T))
+wh.map
+
+saveWidget(wh.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'wheeler_map.png'),
+        cliprect = "viewport")
+```
+
+### Calamity Complex
+```{r}
+field.site.icon <- makeIcon(
+  iconUrl = here('data', 'blue_mtns_misc', 'blue.triangle.png'),
+  iconWidth = 28, iconHeight = 25.5) # Making icon for field site points
+
+ca.map <- leaflet() %>% 
+  setView(lat = 44.01,lng = -118.82, zoom = 13) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addRasterImage(Calamity_mtbs, colors = severity.pal, opacity = 1, group = 'Fire Severity') %>% 
+  addMarkers(lng = field.cluster.df$Long, lat = field.cluster.df$Lat, icon = field.site.icon) %>%
+  addLabelOnlyMarkers(
+    lng = -118.8, lat = 44.013,
+    label = "Calamity",
+    labelOptions = labelOptions(noHide = T, textsize = "70px", textOnly = T))
+ca.map
+
+saveWidget(ca.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'calamity_map.png'),
+        cliprect = "viewport")
+```
+# Legends: Field Sites, Fire Severity
+```{r}
+fire_severity <- as.data.frame(rasterToPoints(Calamity_mtbs)) %>% 
+  filter(calamity_severity>0) %>% 
+  mutate(sites = 'Field sites') %>% 
+  mutate(severity = case_when(calamity_severity == 1 ~ 'Unburned to low',
+                              calamity_severity == 2 ~ 'Low',
+                              calamity_severity == 3 ~ 'Moderate',
+                              calamity_severity == 4 ~ 'High',
+                              calamity_severity == 5 ~ 'Increased greenness')) %>% 
+  mutate(severity = fct_relevel(severity, c('Unburned to low', 'Low', 'Moderate', 'High', 'Increased greenness')))
+
+ggplot(data = fire_severity, aes(x = x, y = y, color = sites)) +
+  geom_point(size = 6) +
+  scale_color_manual(values = c('#FFFF00')) +
+  theme_bw() +
+  theme(legend.title = element_blank(), 
+        legend.text = element_text(face = 'bold', size = 24),
+        legend.position = 'top')
+ggsave(here('figures', 'maps', 'field_sites_legend.png'), height = 10, width = 14)
+
+ggplot(data = fire_severity, aes(x = x, y = y, color = severity)) +
+  geom_point(shape = 15, size = 6) +
+  scale_color_manual(values = c("#FCE690", "#FFAB7D", '#E65441', '#751B00', '#4A7C59')) +
+  labs(color = 'Fire severity class (MTBS)') +
+  theme_bw() +
+  theme(legend.title = element_text(face = 'bold', size = 18), 
+        legend.text = element_text(size = 18),
+        legend.position = 'top')
+ggsave(here('figures', 'maps', 'fire_severity_legend.png'), height = 10, width = 18)
+```
+
+# Map for Website
+```{r}
+web.map <- leaflet() %>% 
+  setView(lat = 44.9,lng = -119, zoom = 8.4) %>% 
+  addProviderTiles(providers$Esri.WorldTopoMap, group = 'Topographic Map') %>% #Topographic: Stamen.TopOSMRelief, Street: Esri.WorldStreetMap
+  addLabelOnlyMarkers(
+    lng = -119.95, lat = 44.85,
+    label = "1",
+    labelOptions = labelOptions(noHide = T, textsize = "18px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -119.13, lat = 44.2,
+    label = "2",
+    labelOptions = labelOptions(noHide = T, textsize = "18px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -119.3, lat = 43.71,
+    label = "3",
+    labelOptions = labelOptions(noHide = T, textsize = "18px", textOnly = T)) %>%
+  addLabelOnlyMarkers(
+    lng = -117.59, lat = 46.19,
+    label = "4",
+    labelOptions = labelOptions(noHide = T, textsize = "18px", textOnly = T)) %>%
+  addMiniMap(
+    tiles = providers$Stadia.StamenToner,
+    position = 'bottomright', 
+    width = 200, height = 200,
+    toggleDisplay = FALSE, zoomLevelOffset = -6.8) %>% 
+  addScaleBar(position = 'bottomright')
+web.map
+
+saveWidget(web.map, "temp.html", selfcontained = FALSE)
+webshot("temp.html", file = here('figures', 'maps', 'website_map.png'),
+        cliprect = "viewport")
+```
+

@@ -1,0 +1,1168 @@
+---
+title: "Generalized Linear Mixed Models"
+author: "Joe Celebrezze"
+date: "2023-11-24"
+output: html_document
+---
+
+The previous 'mixed_effects_models.Rmd' was convoluted, as it had the GLMM selections and the MEM selections all wrapped up into one script. As of 11/24, this script is used for all edits to GLMM selections and associated visualizations, diagnostic plots, etc.
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+here = here::here
+
+source(here("scripts", "source_code.R"))
+source(here("scripts", "mem.selection.function.R"))
+
+library(lme4) # for mixed effects models
+library(lmerTest)
+library(sjPlot) # for tab_model
+library(performance)
+library(cowplot)
+library(gtools)
+library(GGally) # for ggcorr()
+library(glmmTMB) # generalized linear mixed models
+library(kableExtra)
+library(DHARMa) # model diagnostics
+library(broom.mixed) # for tidy for glmmTMB
+plot_grid = cowplot::plot_grid
+group_by = dplyr::group_by
+
+wide.df <- read.csv(here('data', 'processed_data', 'wide.df.csv')) %>% 
+  select(-X)
+colnames(wide.df)[14:37] <- c(0:23)
+long.df <- read.csv(here('data', 'processed_data', 'long.df.csv')) %>% 
+  select(-X)
+field.data.both <- read.csv(here('data', 'processed_data', 'field.data.both.csv')) %>% 
+  select(-X)
+field.cluster.df <- read.csv(here('data', 'processed_data', 'field.cluster.df.csv'))
+colnames(field.cluster.df)[26:49] <- c(0:23)
+```
+
+# Data Wrangling
+```{r}
+# No NAs, scale and center all variables
+mem.df <- field.cluster.df %>% 
+  mutate(postfire_tmean = (postfire_tmin + postfire_tmax)/2) %>%  #delete after rerunning data wrangling
+  drop_na(slope) %>% 
+  mutate(grass.pct = scale(grass.pct), herb.pct = scale(herb.pct), shrub.pct = scale(shrub.pct), seedling.pct = scale(seedling.pct), log.regen.density = scale(log.regen.density), log.seedling.density = scale(log.seedling.density), green.pct = scale(green.pct), npv.pct = scale(npv.pct), densiometer = scale(densiometer), postdisturbance_nbr = scale(postdisturbance_nbr), delta_nbr = scale(delta_nbr), relative_regrowth = scale(relative_regrowth), pct_recovery = scale(pct_recovery), postfire_fitted_rsq = scale(postfire_fitted_rsq), postfire_fitted_slope = scale(postfire_fitted_slope), hli = scale(hli), precip = scale(precip), tmean = scale(tmean), vpdmax = scale(vpdmax), seedling.density = scale(seedling.density), aspect = scale(aspect), slope = scale(slope), dnbr = scale(dnbr), canopy_cover = scale(canopy_cover), cwd_present = scale(cwd_present), elevation = scale(elevation), postfire_ppt = scale(postfire_ppt), postfire_tmax = scale(postfire_tmax), postfire_vpdmax = scale(postfire_vpdmax), postfire_tmean = scale(postfire_tmean))
+
+mem.predictors <- mem.df %>% 
+  select(delta_nbr, relative_regrowth , postfire_fitted_slope , elevation , slope , hli , aspect , canopy_cover, postfire_ppt, postfire_tmean, postfire_vpdmax, dnbr) # omitted postfire_vpdmax, pct_recovery, aspect, postfire_tmax, canopy_cover to add elevation, postfire_ppt, cwd_present, dnbr , postfire_tmean, hli
+
+int.predictors <- c('delta_nbr', 'relative_regrowth' , 'postfire_fitted_slope' , 'elevation' , 'slope' , 'hli' , 'aspect' , 'canopy_cover', 'postfire_ppt', 'postfire_tmean', 'postfire_vpdmax', 'dnbr')
+
+mem.df.glmm <- field.cluster.df %>% 
+  mutate(postfire_tmean = (postfire_tmin + postfire_tmax)/2) %>%  #delete after rerunning data wrangling
+  drop_na(slope) %>% 
+  mutate(postdisturbance_nbr = scale(postdisturbance_nbr), delta_nbr = scale(delta_nbr), relative_regrowth = scale(relative_regrowth), pct_recovery = scale(pct_recovery), postfire_fitted_rsq = scale(postfire_fitted_rsq), postfire_fitted_slope = scale(postfire_fitted_slope), hli = scale(hli), precip = scale(precip), tmean = scale(tmean), vpdmax = scale(vpdmax), seedling.density = scale(seedling.density), aspect = scale(aspect), slope = scale(slope), dnbr = scale(dnbr), canopy_cover = scale(canopy_cover), cwd_present = scale(cwd_present), elevation = scale(elevation), postfire_ppt = scale(postfire_ppt), postfire_tmax = scale(postfire_tmax), postfire_vpdmax = scale(postfire_vpdmax), postfire_tmean = scale(postfire_tmean))
+```
+
+# Correlation Matrix
+```{r}
+mem.df %>% 
+  select(delta_nbr, relative_regrowth , postfire_fitted_slope , elevation , slope , hli , precip , tmean, postfire_ppt, postfire_tmean, cwd_present, dnbr, aspect, postfire_vpdmax, pct_recovery, postfire_tmax, canopy_cover, shrub.pct, seedling.pct, log.seedling.density, log.regen.density, grass.pct, green.pct, npv.pct) %>% 
+  ggcorr(label = T)
+```
+
+# 1. Full Model Selections
+## Spectral
+### Data Wrangling
+```{r}
+glmm.predictors.spectral <- mem.df.glmm %>% 
+  select(relative_regrowth, postfire_fitted_slope, pct_recovery, delta_nbr, dnbr, canopy_cover) # omitted postfire_vpdmax, pct_recovery, aspect, postfire_tmax, canopy_cover to add elevation, postfire_ppt, cwd_present, dnbr , postfire_tmean, hli
+
+glmm.int.predictors.spectral <- c('delta_nbr', 'relative_regrowth', 'postfire_fitted_slope', 'pct_recovery', 'canopy_cover', 'dnbr')
+```
+
+### % Seedling
+Picking out distribution
+```{r}
+# 1. Test for zero inflation (using gaussian model, for now)
+## Using DHARMa package
+seedling.gaussian.glmm <- glmmTMB(seedling.pct ~ elevation + postfire_ppt + (1|fire), mem.df.glmm, gaussian)
+simulated.seedling.gaussian.glmm <- simulateResiduals(fittedModel = seedling.gaussian.glmm, n = 1000)
+testZeroInflation(simulated.seedling.gaussian.glmm) # zero-inflated
+## Using AIC
+seedling.gaussian.glmm.zi <- glmmTMB(seedling.pct ~ elevation + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+AIC(seedling.gaussian.glmm)
+AIC(seedling.gaussian.glmm.zi) # significant improvement
+
+# 2. Using top models identified in gaussian model selection (above), test different families (for % data, try Binomial distributions) and run diagnostic plots on each of them; if zero-inflated, use zero-inflated = ~1 for now
+simulated.seedling.gaussian.glmm <- simulateResiduals(fittedModel = seedling.gaussian.glmm.zi, n = 1000)
+plot(simulated.seedling.gaussian.glmm) # looks meh
+
+seedling.binomial.glmm <- glmmTMB(seedling.pct/100 ~ elevation + postfire_ppt + (1|fire), mem.df.glmm, binomial, ziformula = ~1)
+simulated.seedling.binomial.glmm <- simulateResiduals(fittedModel = seedling.binomial.glmm, n = 1000)
+plot(simulated.seedling.binomial.glmm) # looks BAD
+
+# BEST DISTRIBUTION: GAUSSIAN
+```
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (first with just ziformula = ~1)
+seed.glmm.selection.gaussian <- glmm.selection('seedling.pct', glmm.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '1')
+seed.model.df.gaussian <- seed.glmm.selection.gaussian[[1]]
+seed.mod.list.gaussian <- seed.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+seed.glmm.int.selection <- glmm.int.selection('seedling.pct', glmm.int.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '1')
+seed.glmm.int.df <- seed.glmm.int.selection[[1]] # sig. worse
+
+# 5. Zero-inflated Model Selection(s): if not too much of an ask, try to run these for all 'top-performing models'
+seed.glmm.zi.selection <- glmm.zi.selection('seedling.pct ~ canopy_cover + delta_nbr + postfire_fitted_slope + relative_regrowth + (1 | fire)', 'seedling.pct', glmm.predictors.spectral, mem.df.glmm, gaussian)
+seed.model.df.gaussian.zi <- seed.glmm.zi.selection[[1]]
+seed.mod.list.gaussian.zi <- seed.glmm.zi.selection[[2]]
+
+seed.glmm.zi.selection2 <- glmm.zi.selection('seedling.pct ~ canopy_cover + dnbr + postfire_fitted_slope + relative_regrowth + (1 | fire)', 'seedling.pct', glmm.predictors.spectral, mem.df.glmm, gaussian)
+seed.model.df.gaussian.zi2 <- seed.glmm.zi.selection2[[1]]
+seed.mod.list.gaussian.zi2 <- seed.glmm.zi.selection2[[2]]
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(seed.mod.list.gaussian.zi2[[7]])
+summary(seed.mod.list.gaussian.zi[[7]]) # based on significance of predictors, I think model with delta_nbr should be preferred over dnbr
+
+# 7. Define top model and run model diagnostic plots
+seedling.top.model <- glmmTMB(seedling.pct ~ canopy_cover + delta_nbr + postfire_fitted_slope + relative_regrowth + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+summary(seedling.top.model)
+simulated.seedling <- simulateResiduals(fittedModel = seedling.top.model, n = 1000)
+plot(simulated.seedling) # looks meh
+testZeroInflation(simulated.seedling) # looks good
+testUniformity(simulated.seedling) # not uniform
+testDispersion(simulated.seedling) # looks good
+```
+
+### % Shrub
+Picking out distribution
+```{r}
+# 1. Test for zero inflation (using gaussian model, for now)
+## Using DHARMa package
+shrub.gaussian.glmm <- glmmTMB(shrub.pct ~ delta_nbr + postfire_fitted_slope + dnbr + (1|fire), mem.df.glmm, gaussian)
+simulated.shrub.gaussian.glmm <- simulateResiduals(fittedModel = shrub.gaussian.glmm, n = 1000)
+testZeroInflation(simulated.shrub.gaussian.glmm) # zero-inflated
+## Using AIC
+shrub.gaussian.glmm.zi <- glmmTMB(shrub.pct ~ delta_nbr + postfire_fitted_slope + dnbr + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+AIC(shrub.gaussian.glmm)
+AIC(shrub.gaussian.glmm.zi) # not a significant improvement; stick to no zero inflation
+
+# 2. Using top models identified in gaussian model selection (above), test different families (for % data, try Binomial distributions) and run diagnostic plots on each of them; if zero-inflated, use zero-inflated = ~1 for now
+plot(simulated.shrub.gaussian.glmm) # looks good!
+
+shrub.binomial.glmm <- glmmTMB(shrub.pct/100 ~ delta_nbr + postfire_fitted_slope + dnbr + (1|fire), mem.df.glmm, binomial)
+simulated.shrub.binomial.glmm <- simulateResiduals(fittedModel = shrub.binomial.glmm, n = 1000)
+plot(simulated.shrub.binomial.glmm) # looks BAD
+
+# BEST DISTRIBUTION: GAUSSIAN
+```
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (no zero inflation)
+shrub.glmm.selection.gaussian <- glmm.selection('shrub.pct', glmm.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '0')
+shrub.model.df.gaussian <- shrub.glmm.selection.gaussian[[1]]
+shrub.mod.list.gaussian <- shrub.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+shrub.glmm.int.selection <- glmm.int.selection('shrub.pct', glmm.int.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '0')
+shrub.glmm.int.df <- shrub.glmm.int.selection[[1]] # sig. worse
+
+# 5. Zero-inflated Model Selection(s): not applicable
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(shrub.mod.list.gaussian[[27]]) # lowest AIC
+summary(shrub.mod.list.gaussian[[37]]) # canopy cover not sig
+summary(shrub.mod.list.gaussian[[51]]) # canopy cover and pct recovery not sig
+summary(shrub.mod.list.gaussian[[46]]) # pct recovery not sig
+# Selecting model no. 27
+
+# 7. Define top model and run model diagnostic plots
+shrub.top.model <- glmmTMB(shrub.pct ~ delta_nbr + dnbr + postfire_fitted_slope + (1 | fire), mem.df.glmm, gaussian)
+simulated.shrub <- simulateResiduals(fittedModel = shrub.top.model, n = 1000)
+plot(simulated.shrub) # looks great
+testZeroInflation(simulated.shrub) # zero inflated, but only one zero so not a big deal
+testUniformity(simulated.shrub) # looks good
+testDispersion(simulated.shrub) # looks good
+```
+
+### % Grass
+Picking out distribution
+```{r}
+# 1. Test for zero inflation (using gaussian model, for now)
+## Using DHARMa package
+grass.gaussian.glmm <- glmmTMB(grass.pct ~ postfire_ppt + postfire_fitted_slope*postfire_tmean + (1|fire), mem.df.glmm, gaussian)
+simulated.grass.gaussian.glmm <- simulateResiduals(fittedModel = grass.gaussian.glmm, n = 1000)
+testZeroInflation(simulated.grass.gaussian.glmm) # zero-inflated
+## Using AIC
+grass.gaussian.glmm.zi <- glmmTMB(grass.pct ~ postfire_ppt + postfire_fitted_slope*postfire_tmean + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+AIC(grass.gaussian.glmm)
+AIC(grass.gaussian.glmm.zi) # not significant improvement; but we can test anyways
+
+# 2. Using top models identified in gaussian model selection (above), test different families (for % data, try Binomial distributions) and run diagnostic plots on each of them; if zero-inflated, use zero-inflated = ~1 for now
+plot(simulated.grass.gaussian.glmm) # qqplot looks good; residual plot looks meh
+
+grass.binomial.glmm <- glmmTMB(grass.pct/100 ~ postfire_ppt + postfire_fitted_slope*postfire_tmean + (1|fire), mem.df.glmm, binomial)
+simulated.grass.binomial.glmm <- simulateResiduals(fittedModel = grass.binomial.glmm, n = 1000)
+plot(simulated.grass.binomial.glmm) # looks BAD
+
+# BEST DISTRIBUTION: GAUSSIAN
+```
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (first with no zero inflation)
+grass.glmm.selection.gaussian <- glmm.selection('grass.pct', glmm.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '0')
+grass.model.df.gaussian <- grass.glmm.selection.gaussian[[1]]
+grass.mod.list.gaussian <- grass.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+grass.glmm.int.selection <- glmm.int.selection('grass.pct', glmm.int.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '0')
+grass.glmm.int.df <- grass.glmm.int.selection[[1]] # sig. better
+grass.glmm.int.mod.list <- grass.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s): not working for % grass because only a few zero values; however, we will try a couple of different zero inflation formulas to test the impact on the AIC
+grass.glmm.zi.selection.mod1 <- glmmTMB(grass.pct ~ relative_regrowth*postfire_fitted_slope + (1|fire), mem.df.glmm, gaussian, ziformula= ~ 1) 
+AIC(grass.glmm.zi.selection.mod1) # slightly worse
+grass.glmm.zi.selection.mod2 <- glmmTMB(grass.pct ~ relative_regrowth*postfire_fitted_slope + (1|fire), mem.df.glmm, gaussian, ziformula= ~ relative_regrowth) 
+AIC(grass.glmm.zi.selection.mod2) # sig. worse
+grass.glmm.zi.selection.mod3 <- glmmTMB(grass.pct ~ relative_regrowth*postfire_fitted_slope + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_fitted_slope) 
+AIC(grass.glmm.zi.selection.mod3) # slightly better
+
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(grass.glmm.int.mod.list[[6]]) # relative_regrowth not significant
+summary(grass.glmm.zi.selection.mod3) # although only 3 zero values and only a slight improvement of AIC score, zero inflation may be necessary for this model
+summary(grass.glmm.int.mod.list[[11]]) # canopy cover not significant
+r2_nakagawa(grass.glmm.int.mod.list[[6]]) # higher conditional rsq but lower marginal rsq
+r2_nakagawa(grass.glmm.int.mod.list[[11]]) # higher marginal rsq but lower conditional rsq
+r2_nakagawa(grass.glmm.zi.selection.mod3) # sig. higher marginal and conditional rsq
+# going to use grass.glmm.zi.selection.mod3 due to lower AIC, BIC and higher conditional rsq
+
+# 7. Define top model and run model diagnostic plots
+grass.top.model <- glmmTMB(grass.pct ~ relative_regrowth*postfire_fitted_slope + canopy_cover + (1|fire), mem.df.glmm, gaussian, ziformula = ~postfire_fitted_slope) 
+simulated.grass <- simulateResiduals(fittedModel = grass.top.model, n = 1000)
+plot(simulated.grass) # looks good
+testZeroInflation(simulated.grass) # looks good
+testUniformity(simulated.grass) # looks good
+testDispersion(simulated.grass) # looks good
+```
+
+### Regen Density
+Picking out distribution: for density, we can test gaussian (if log-transformed), poisson, negative binomial 1 and negative binomial 2 (more options)
+```{r}
+# 1. Test for zero inflation (using gaussian model w/ log.regen.density, for now)
+## Using DHARMa package
+regen.gaussian.glmm <- glmmTMB(log.regen.density ~ slope*postfire_vpdmax + (1|fire), mem.df.glmm, gaussian)
+simulated.regen.gaussian.glmm <- simulateResiduals(fittedModel = regen.gaussian.glmm, n = 1000)
+testZeroInflation(simulated.regen.gaussian.glmm) # zero-inflated
+## Using AIC
+regen.gaussian.glmm.zi <- glmmTMB(log.regen.density ~ slope*postfire_vpdmax + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+AIC(regen.gaussian.glmm)
+AIC(regen.gaussian.glmm.zi) # significant improvement
+
+# 2. Using top models identified in gaussian model selection (above), test different families  and run diagnostic plots on each of them; if zero-inflated, use zero-inflated = ~1 for now
+simulated.regen.gaussian.glmm <- simulateResiduals(fittedModel = regen.gaussian.glmm.zi, n = 1000)
+plot(simulated.regen.gaussian.glmm) # actually, looks great!
+
+regen.nbinom1.glmm <- glmmTMB(regen.density ~ slope*postfire_vpdmax + (1|fire), mem.df.glmm, nbinom1, ziformula = ~1)
+simulated.regen.nbinom1.glmm <- simulateResiduals(fittedModel = regen.nbinom1.glmm, n = 1000)
+plot(simulated.regen.nbinom1.glmm) # looks okay, but worse than gaussian
+
+regen.nbinom2.glmm <- glmmTMB(regen.density ~ slope*postfire_vpdmax + (1|fire), mem.df.glmm, nbinom2, ziformula = ~1)
+simulated.regen.nbinom2.glmm <- simulateResiduals(fittedModel = regen.nbinom2.glmm, n = 1000)
+plot(simulated.regen.nbinom2.glmm) # looks good, but worse than gaussian
+
+regen.poisson.glmm <- glmmTMB(regen.density ~ slope*postfire_vpdmax + (1|fire), mem.df.glmm, poisson, ziformula = ~1)
+simulated.regen.poisson.glmm <- simulateResiduals(fittedModel = regen.poisson.glmm, n = 1000)
+plot(simulated.regen.poisson.glmm) # looks BAD
+
+# BEST DISTRIBUTION: GAUSSIAN or NBINOM2
+```
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (for now, just with ziformula = ~1)
+regen.glmm.selection.gaussian <- glmm.selection('log.regen.density', glmm.predictors.spectral, mem.df.glmm, gaussian, zero.inflation = '1')
+regen.model.df.gaussian <- regen.glmm.selection.gaussian[[1]]
+regen.mod.list.gaussian <- regen.glmm.selection.gaussian[[2]]
+
+regen.glmm.selection.nbinom2 <- glmm.selection('regen.density', glmm.predictors.spectral, mem.df.glmm, nbinom2, zero.inflation = '1')
+regen.model.df.nbinom2 <- regen.glmm.selection.nbinom2[[1]]
+regen.mod.list.nbinom2 <- regen.glmm.selection.nbinom2[[2]]
+# AIC for the two families is incomparable, Rsq is higher for nbinom2; let's check out diagnostic plots to decide which to choose
+regen.mod.list.gaussian[[16]]
+regen.mod.list.nbinom2[[16]]
+
+simulated.regen.gaussian.glmm <- simulateResiduals(fittedModel = regen.mod.list.gaussian[[16]], n = 1000)
+plot(simulated.regen.gaussian.glmm) # looks great
+simulated.regen.nbinom2.glmm <- simulateResiduals(fittedModel = regen.mod.list.nbinom2[[16]], n = 1000)
+plot(simulated.regen.nbinom2.glmm) # looks pretty good
+
+# although the nbinom2 looks slightly worse than the gaussian, I am going to select this distribution, as it prevents the log-transformation
+
+# 4. Interactions
+regen.glmm.int.selection <- glmm.int.selection('regen.density', glmm.int.predictors.spectral, mem.df.glmm, nbinom2, zero.inflation = '1')
+regen.glmm.int.df <- regen.glmm.int.selection[[1]] # sig. better
+regen.glmm.int.mod.list <- regen.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s)
+regen.glmm.zi.selection <- glmm.zi.selection('regen.density ~ relative_regrowth*canopy_cover + (1 | fire)', 'regen.density', glmm.predictors.spectral, mem.df.glmm, nbinom2)
+regen.model.df.nbinom2.zi <- regen.glmm.zi.selection[[1]]
+regen.mod.list.nbinom2.zi <- regen.glmm.zi.selection[[2]]
+# By intercept is best model...
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(regen.mod.list.nbinom2.zi[[1]]) # intercept only; intercept is sig.
+summary(regen.mod.list.nbinom2.zi[[6]]) # dnbr not sig.
+summary(regen.mod.list.nbinom2.zi[[3]]) # postfire fitted slope not sig.
+r2_nakagawa(regen.mod.list.nbinom2.zi[[1]]) # ...
+r2_nakagawa(regen.mod.list.nbinom2.zi[[6]]) # same as above
+r2_nakagawa(regen.mod.list.nbinom2.zi[[3]]) # same as above
+# going to use intercept-only zero-inflated model (lowest AIC and other variables not significant)
+
+# 7. Define top model and run model diagnostic plots
+regen.top.model <- glmmTMB(regen.density ~ relative_regrowth*canopy_cover + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+AIC(regen.top.model)
+summary(regen.top.model)
+simulated.regen <- simulateResiduals(fittedModel = regen.top.model, n = 1000)
+plot(simulated.regen) # looks pretty good
+testZeroInflation(simulated.regen) # looks good
+testUniformity(simulated.regen) # looks good
+testDispersion(simulated.regen) # looks good
+```
+
+## Climate & Topography
+Using same error distributions as identified in spectral selection (above)
+### Data Wrangling
+```{r}
+glmm.predictors.climtopo <- mem.df.glmm %>% 
+  select(elevation, slope, hli, aspect, postfire_ppt, postfire_tmean, postfire_vpdmax) %>%  # omitted postfire_vpdmax, pct_recovery, aspect, postfire_tmax, canopy_cover to add elevation, postfire_ppt, cwd_present, dnbr , postfire_tmean, hli
+  mutate(elevation = as.numeric(elevation), slope = as.numeric(slope),
+         hli = as.numeric(hli), aspect = as.numeric(aspect),
+         postfire_ppt = as.numeric(postfire_ppt), postfire_tmean = as.numeric(postfire_tmean),
+         postfire_vpdmax = as.numeric(postfire_vpdmax))
+
+glmm.predictors.climtopo.zi <- glmm.predictors.climtopo %>% 
+  select(-hli) # zero-inflated model selection was being finnicky with more than 6 variables for some reason...
+
+glmm.int.predictors.climtopo <- c('elevation', 'slope', 'hli', 'aspect', 'postfire_ppt', 'postfire_tmean', 'postfire_vpdmax')
+```
+
+### % Seedling
+Picking out distribution: Gaussian
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (first with just ziformula = ~1)
+seed.glmm.selection.gaussian <- glmm.selection('seedling.pct', glmm.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = '1')
+seed.model.df.gaussian <- seed.glmm.selection.gaussian[[1]]
+seed.mod.list.gaussian <- seed.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+seed.glmm.int.selection <- glmm.int.selection('seedling.pct', glmm.int.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = '1')
+seed.glmm.int.df <- seed.glmm.int.selection[[1]] # sig. better
+
+# 5. Zero-inflated Model Selection(s): if not too much of an ask, try to run these for all 'top-performing models'
+seed.glmm.zi.selection <- glmm.zi.selection('seedling.pct ~ aspect*postfire_ppt + (1 | fire)', 'seedling.pct', predictors = glmm.predictors.climtopo.zi, df = mem.df.glmm, gaussian)
+seed.model.df.gaussian.zi <- seed.glmm.zi.selection[[1]]
+seed.mod.list.gaussian.zi <- seed.glmm.zi.selection[[2]]
+
+seed.glmm.zi.selection2 <- glmm.zi.selection('seedling.pct ~ postfire_tmean*postfire_ppt + (1 | fire)', 'seedling.pct', glmm.predictors.climtopo.zi, mem.df.glmm, gaussian)
+seed.model.df.gaussian.zi2 <- seed.glmm.zi.selection2[[1]]
+seed.mod.list.gaussian.zi2 <- seed.glmm.zi.selection2[[2]]
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(seed.mod.list.gaussian.zi[[11]])
+summary(seed.mod.list.gaussian.zi2[[11]]) # based on significance of predictors, I think model with postfire_tmean should be preferred over model with aspect; elevation not sig. but lower p-value than alternatives (below) and minimizes AIC, so selecting this as top model
+
+summary(seed.mod.list.gaussian.zi2[[8]]) # tmean not sig
+summary(seed.mod.list.gaussian.zi2[[14]]) # vpdmax not sig
+summary(seed.mod.list.gaussian.zi2[[15]]) # vpdmax not sig
+summary(seed.mod.list.gaussian.zi2[[17]]) # aspect and elevation not sig
+summary(seed.mod.list.gaussian.zi2[[24]]) # vpdmax and elevation not sig
+
+# 7. Define top model and run model diagnostic plots
+seedling.top.model <- glmmTMB(seedling.pct ~ postfire_tmean*postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~elevation + postfire_ppt)
+AIC(seedling.top.model)
+simulated.seedling <- simulateResiduals(fittedModel = seedling.top.model, n = 1000)
+plot(simulated.seedling) # looks meh
+testZeroInflation(simulated.seedling) # looks good
+testUniformity(simulated.seedling) # not uniform
+testDispersion(simulated.seedling) # looks good
+```
+
+### % Shrub
+Picking out distribution: Gaussian
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (no zero inflation)
+shrub.glmm.selection.gaussian <- glmm.selection('shrub.pct', glmm.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = '0')
+shrub.model.df.gaussian <- shrub.glmm.selection.gaussian[[1]]
+shrub.mod.list.gaussian <- shrub.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+shrub.glmm.int.selection <- glmm.int.selection('shrub.pct', glmm.int.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = '0')
+shrub.glmm.int.df <- shrub.glmm.int.selection[[1]] # sig. better
+shrub.glmm.int.mod.list <- shrub.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s): not applicable
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(shrub.glmm.int.mod.list[[12]]) # neither hli nor aspect sig, but interaction term is
+summary(shrub.glmm.int.mod.list[[1]]) # elevation and slope sig predictors
+# Selecting model no. 1
+
+# 7. Define top model and run model diagnostic plots
+shrub.top.model <- glmmTMB(shrub.pct ~ elevation*slope + aspect + (1 | fire), mem.df.glmm, gaussian)
+AIC(shrub.top.model)
+simulated.shrub <- simulateResiduals(fittedModel = shrub.top.model, n = 1000)
+plot(simulated.shrub) # looks great
+testZeroInflation(simulated.shrub) # zero inflated, but only one zero so not a big deal
+testUniformity(simulated.shrub) # looks good enough
+testDispersion(simulated.shrub) # looks good
+```
+
+### % Grass
+Picking out distribution: Gaussian
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (first with no zero inflation)
+grass.glmm.selection.gaussian <- glmm.selection('grass.pct', glmm.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = '0')
+grass.model.df.gaussian <- grass.glmm.selection.gaussian[[1]]
+grass.mod.list.gaussian <- grass.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+grass.glmm.int.selection <- glmm.int.selection('grass.pct', glmm.int.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = '0')
+grass.glmm.int.df <- grass.glmm.int.selection[[1]] # sig. worse
+grass.glmm.int.mod.list <- grass.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s): not working for % grass because only a few zero values; however, we will try a couple of different zero inflation formulas to test the impact on the AIC
+grass.glmm.zi.selection.mod1 <- glmmTMB(grass.pct ~ aspect + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula= ~ 1) 
+AIC(grass.glmm.zi.selection.mod1) # slightly worse
+grass.glmm.zi.selection.mod2 <- glmmTMB(grass.pct ~ aspect + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula= ~ aspect) 
+AIC(grass.glmm.zi.selection.mod2) # sig. worse
+grass.glmm.zi.selection.mod3 <- glmmTMB(grass.pct ~ aspect + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_ppt) 
+AIC(grass.glmm.zi.selection.mod3) # sig better
+# rerunning model selection with zero inflated model
+grass.glmm.selection.gaussian <- glmm.selection('grass.pct', glmm.predictors.climtopo, mem.df.glmm, gaussian, zero.inflation = 'postfire_ppt')
+grass.model.df.gaussian <- grass.glmm.selection.gaussian[[1]]
+grass.mod.list.gaussian <- grass.glmm.selection.gaussian[[2]]
+
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(grass.mod.list.gaussian[[3]]) # aspect not sig.
+summary(grass.mod.list.gaussian[[10]]) # hli not sig.
+summary(grass.mod.list.gaussian[[17]]) # elevation and aspect not sig.
+
+r2_nakagawa(grass.mod.list.gaussian[[3]]) # highest rsq, so choosing this one
+r2_nakagawa(grass.mod.list.gaussian[[10]]) 
+r2_nakagawa(grass.mod.list.gaussian[[17]])
+
+# 7. Define top model and run model diagnostic plots
+grass.top.model <- glmmTMB(grass.pct ~ aspect + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~postfire_ppt) 
+simulated.grass <- simulateResiduals(fittedModel = grass.top.model, n = 1000)
+plot(simulated.grass) # looks good
+testZeroInflation(simulated.grass) # looks good
+testUniformity(simulated.grass) # looks good
+testDispersion(simulated.grass) # looks good
+```
+
+### Regen Density
+Picking out distribution: Negative binomial 2
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (for now, just with ziformula = ~1)
+regen.glmm.selection.nbinom2 <- glmm.selection('regen.density', glmm.predictors.climtopo, mem.df.glmm, nbinom2, zero.inflation = '1')
+regen.model.df.nbinom2 <- regen.glmm.selection.nbinom2[[1]]
+regen.mod.list.nbinom2 <- regen.glmm.selection.nbinom2[[2]]
+
+# 4. Interactions
+regen.glmm.int.selection <- glmm.int.selection('regen.density', glmm.int.predictors.climtopo, mem.df.glmm, nbinom2, zero.inflation = '1')
+regen.glmm.int.df <- regen.glmm.int.selection[[1]] # sig. better
+regen.glmm.int.mod.list <- regen.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s)
+regen.glmm.zi.selection <- glmm.zi.selection('regen.density ~ hli*aspect + (1 | fire)', 'regen.density', glmm.predictors.climtopo.zi, mem.df.glmm, nbinom2)
+regen.model.df.nbinom2.zi <- regen.glmm.zi.selection[[1]] # slightly better
+regen.mod.list.nbinom2.zi <- regen.glmm.zi.selection[[2]]
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(regen.mod.list.nbinom2.zi[[1]]) # intercept only; intercept is sig.
+summary(regen.mod.list.nbinom2.zi[[7]]) # dnbr not sig.
+summary(regen.mod.list.nbinom2.zi[[9]]) # postfire fitted slope not sig.
+# going to use intercept-only zero-inflated model (sig. lower BIC than top-performing AIC)
+
+# 7. Define top model and run model diagnostic plots
+regen.top.model <- glmmTMB(regen.density ~ hli*aspect + postfire_ppt + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+simulated.regen <- simulateResiduals(fittedModel = regen.top.model, n = 1000)
+plot(simulated.regen) # looks pretty good
+testZeroInflation(simulated.regen) # looks good
+testUniformity(simulated.regen) # looks good
+testDispersion(simulated.regen) # looks good
+```
+
+## All
+Using same error distributions as identified in above selection
+### Data Wrangling
+```{r}
+glmm.predictors <- mem.df.glmm %>% 
+  select(relative_regrowth, postfire_fitted_slope, delta_nbr, dnbr, elevation, slope, postfire_ppt, postfire_tmean, postfire_vpdmax) #omitted postfire_vpdmax, pct_recovery, aspect, postfire_tmax, canopy_cover to add elevation, postfire_ppt, cwd_present, dnbr , postfire_tmean, hli
+
+# omitted: canopy_cover, pct_recovery, hli, aspect
+
+glmm.predictors.zi <- glmm.predictors %>% 
+  select(-hli) # zero-inflated model selection was being finnicky with more than 6 variables for some reason...
+
+glmm.int.predictors <- c('elevation', 'slope', 'postfire_ppt', 'postfire_tmean', 'postfire_vpdmax', 'relative_regrowth', 'postfire_fitted_slope', 'delta_nbr', 'dnbr')
+```
+
+### % Seedling
+Picking out distribution: Gaussian
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (first with just ziformula = ~1)
+seed.glmm.selection.gaussian <- glmm.selection('seedling.pct', glmm.predictors, mem.df.glmm, gaussian, zero.inflation = '1')
+seed.model.df.gaussian <- seed.glmm.selection.gaussian[[1]]
+seed.mod.list.gaussian <- seed.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+seed.glmm.int.selection <- glmm.int.selection('seedling.pct', glmm.int.predictors, mem.df.glmm, gaussian, zero.inflation = '1')
+seed.glmm.int.df <- seed.glmm.int.selection[[1]] # sig. better
+
+# 5. Zero-inflated Model Selection(s)
+glmm.zi.predictors <- mem.df.glmm %>% 
+  select(relative_regrowth, postfire_fitted_slope, aspect, elevation, postfire_ppt, postfire_tmean)
+seed.glmm.zi.selection <- glmm.zi.selection('seedling.pct ~ postfire_fitted_slope*postfire_ppt + (1 | fire)', 'seedling.pct', predictors = glmm.zi.predictors, df = mem.df.glmm, gaussian)
+seed.model.df.gaussian.zi <- seed.glmm.zi.selection[[1]]
+seed.mod.list.gaussian.zi <- seed.glmm.zi.selection[[2]]
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(seed.mod.list.gaussian.zi[[7]]) # canopy cover sig.
+summary(seed.mod.list.gaussian.zi[[14]])  # postfire ppt sig., but not elevation
+summary(seed.mod.list.gaussian.zi[[10]]) # aspect n.s.
+summary(seed.mod.list.gaussian.zi[[20]]) # postfire_tmean n.s.
+# selecting zero-inflated model with canopy cover (lowest AIC, sig. predictor)
+
+m1 <- glmmTMB(seedling.pct ~ postfire_fitted_slope*postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+AIC(m1)
+m2 <- glmmTMB(seedling.pct ~ postfire_fitted_slope*postfire_ppt + dnbr + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+AIC(m2) # very similar AIC
+m3 <- glmmTMB(seedling.pct ~ postfire_fitted_slope*postfire_ppt + relative_regrowth + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+AIC(m3) # sig. lower AIC
+
+
+# 7. Define top model and run model diagnostic plots
+seedling.top.model <- glmmTMB(seedling.pct ~ postfire_fitted_slope*postfire_ppt + relative_regrowth + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+simulated.seedling <- simulateResiduals(fittedModel = seedling.top.model, n = 1000)
+plot(simulated.seedling) # looks meh
+testZeroInflation(simulated.seedling) # looks good
+testUniformity(simulated.seedling) # not uniform
+testDispersion(simulated.seedling) # looks good
+```
+
+### % Shrub
+Picking out distribution: Gaussian
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (no zero inflation)
+shrub.glmm.selection.gaussian <- glmm.selection('shrub.pct', glmm.predictors, mem.df.glmm, gaussian, zero.inflation = '0')
+shrub.model.df.gaussian <- shrub.glmm.selection.gaussian[[1]]
+shrub.mod.list.gaussian <- shrub.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+shrub.glmm.int.selection <- glmm.int.selection('shrub.pct', glmm.int.predictors, mem.df.glmm, gaussian, zero.inflation = '0')
+shrub.glmm.int.df <- shrub.glmm.int.selection[[1]] # sig. worse
+shrub.glmm.int.mod.list <- shrub.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s): not applicable
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+summary(shrub.mod.list.gaussian[[38]]) # all sig.
+summary(shrub.mod.list.gaussian[[381]]) # postfire vpd not sig
+summary(shrub.mod.list.gaussian[[131]]) # slope not sig
+# Selecting model no. 38; lowest BIC, all predictors sig., and AIC not sig. higher than lowest AIC
+
+# 7. Define top model and run model diagnostic plots
+shrub.top.model <- glmmTMB(shrub.pct ~ delta_nbr + dnbr + postfire_fitted_slope + (1 | fire), mem.df.glmm, gaussian)
+AIC(shrub.top.model)
+simulated.shrub <- simulateResiduals(fittedModel = shrub.top.model, n = 1000)
+plot(simulated.shrub) # looks great
+testZeroInflation(simulated.shrub) # zero inflated, but only one zero so not a big deal
+testUniformity(simulated.shrub) # looks good
+testDispersion(simulated.shrub) # looks good
+```
+
+### % Grass
+Picking out distribution: Gaussian
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (first with no zero inflation)
+grass.glmm.selection.gaussian <- glmm.selection('grass.pct', glmm.predictors, mem.df.glmm, gaussian, zero.inflation = '0')
+grass.model.df.gaussian <- grass.glmm.selection.gaussian[[1]]
+grass.mod.list.gaussian <- grass.glmm.selection.gaussian[[2]]
+
+# 4. Interactions
+grass.glmm.int.selection <- glmm.int.selection('grass.pct', glmm.int.predictors, mem.df.glmm, gaussian, zero.inflation = '0')
+grass.glmm.int.df <- grass.glmm.int.selection[[1]] # sig. better
+grass.glmm.int.mod.list <- grass.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s): not working for % grass because only a few zero values; however, we will try a couple of different zero inflation formulas to test the impact on the AIC
+grass.glmm.zi.selection.mod1 <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_tmean) 
+AIC(grass.glmm.zi.selection.mod1) # sig worse
+grass.glmm.zi.selection.mod2 <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + (1|fire), mem.df.glmm, gaussian, ziformula= ~ 1) 
+AIC(grass.glmm.zi.selection.mod2) # slightly worse
+grass.glmm.zi.selection.mod3 <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_fitted_slope) 
+AIC(grass.glmm.zi.selection.mod3) # about the same
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+# Testing if other predictors improve model
+m1 <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_fitted_slope) 
+AIC(m1) # sig. better
+m2 <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + dnbr + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_fitted_slope) 
+AIC(m2) # worse. Also tried other predictors but not shown above to keep code clean
+
+# 7. Define top model and run model diagnostic plots
+grass.top.model <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula= ~ postfire_fitted_slope)
+simulated.grass <- simulateResiduals(fittedModel = grass.top.model, n = 1000)
+plot(simulated.grass) # looks pretty good
+testZeroInflation(simulated.grass) # looks good
+testUniformity(simulated.grass) # looks good
+testDispersion(simulated.grass) # looks good
+```
+
+### Regen Density
+Picking out distribution: Negative binomial 2
+
+Choosing predictors and ziformula
+```{r}
+# 3. Model Selection (for now, just with ziformula = ~1)
+regen.glmm.selection.nbinom2 <- glmm.selection('regen.density', glmm.predictors, mem.df.glmm, nbinom2, zero.inflation = '1')
+regen.model.df.nbinom2 <- regen.glmm.selection.nbinom2[[1]]
+regen.mod.list.nbinom2 <- regen.glmm.selection.nbinom2[[2]]
+
+# 4. Interactions
+regen.glmm.int.selection <- glmm.int.selection('regen.density', glmm.int.predictors, mem.df.glmm, nbinom2, zero.inflation = '1')
+regen.glmm.int.df <- regen.glmm.int.selection[[1]] # sig. better
+regen.glmm.int.mod.list <- regen.glmm.int.selection[[2]]
+
+# 5. Zero-inflated Model Selection(s)
+glmm.zi.predictors <- mem.df.glmm %>% 
+  select(relative_regrowth, delta_nbr, dnbr, elevation, postfire_ppt, postfire_tmean)
+regen.glmm.zi.selection <- glmm.zi.selection('regen.density ~ postfire_tmean*relative_regrowth + postfire_ppt + (1 | fire)', 'regen.density', glmm.zi.predictors, mem.df.glmm, nbinom2)
+regen.model.df.nbinom2.zi <- regen.glmm.zi.selection[[1]] # intercept is best model
+regen.mod.list.nbinom2.zi <- regen.glmm.zi.selection[[2]]
+
+# 6. Choose Model Structure(s): This is where the 'art' of modeling comes into play; we have plenty of information above, but some models are not significantly different from each other. Using AIC, BIC, Rsq and significance of variables, we will figure out which model we want to display
+m1 <- glmmTMB(regen.density ~ postfire_tmean*relative_regrowth + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+AIC(m1)
+m2 <- glmmTMB(regen.density ~ postfire_tmean*relative_regrowth + postfire_ppt + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+AIC(m2)
+# going to use intercept-only zero-inflated model; postfire_ppt sig. improves model (so including it); also tested aspect, % recovery, hli, canopy cover (but not included above to clean up code a bit)
+
+# 7. Define top model and run model diagnostic plots
+regen.top.model <- glmmTMB(regen.density ~ postfire_tmean*relative_regrowth + postfire_ppt + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+simulated.regen <- simulateResiduals(fittedModel = regen.top.model, n = 1000)
+plot(simulated.regen) # looks pretty good
+testZeroInflation(simulated.regen) # looks good
+testUniformity(simulated.regen) # looks good
+testDispersion(simulated.regen) # looks good
+```
+
+
+## Top Models
+### Spectral
+```{r}
+seedling.top.model.spectral <- glmmTMB(seedling.pct ~ canopy_cover + delta_nbr + postfire_fitted_slope + relative_regrowth + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+summary(seedling.top.model.spectral)
+AIC(seedling.top.model.spectral)
+BIC(seedling.top.model.spectral)
+r2_nakagawa(seedling.top.model.spectral)
+simulated <- simulateResiduals(fittedModel = seedling.top.model.spectral, n = 1000)
+plot(simulated) # looks meh
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+shrub.top.model.spectral <- glmmTMB(shrub.pct ~ delta_nbr + dnbr + postfire_fitted_slope + (1 | fire), mem.df.glmm, gaussian)
+summary(shrub.top.model.spectral)
+AIC(shrub.top.model.spectral)
+BIC(shrub.top.model.spectral)
+r2_nakagawa(shrub.top.model.spectral)
+simulated <- simulateResiduals(fittedModel = shrub.top.model.spectral, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+grass.top.model.spectral <- glmmTMB(grass.pct ~ relative_regrowth*postfire_fitted_slope + canopy_cover + (1|fire), mem.df.glmm, gaussian, ziformula = ~postfire_fitted_slope) 
+summary(grass.top.model.spectral)
+AIC(grass.top.model.spectral)
+BIC(grass.top.model.spectral)
+r2_nakagawa(grass.top.model.spectral)
+simulated <- simulateResiduals(fittedModel = grass.top.model.spectral, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+regen.top.model.spectral <- glmmTMB(regen.density ~ relative_regrowth*canopy_cover + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+summary(regen.top.model.spectral)
+AIC(regen.top.model.spectral)
+BIC(regen.top.model.spectral)
+r2_nakagawa(regen.top.model.spectral)
+simulated <- simulateResiduals(fittedModel = regen.top.model.spectral, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+```
+
+### Climate and Topography
+```{r}
+seedling.top.model.climtopo <- glmmTMB(seedling.pct ~ postfire_tmean*postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~elevation + postfire_ppt)
+summary(seedling.top.model.climtopo)
+AIC(seedling.top.model.climtopo)
+BIC(seedling.top.model.climtopo)
+r2_nakagawa(seedling.top.model.climtopo)
+simulated <- simulateResiduals(fittedModel = seedling.top.model.climtopo, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+shrub.top.model.climtopo <- glmmTMB(shrub.pct ~ elevation*slope + aspect + (1 | fire), mem.df.glmm, gaussian)
+summary(shrub.top.model.climtopo)
+AIC(shrub.top.model.climtopo)
+BIC(shrub.top.model.climtopo)
+r2_nakagawa(shrub.top.model.climtopo)
+simulated <- simulateResiduals(fittedModel = shrub.top.model.climtopo, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+grass.top.model.climtopo <- glmmTMB(grass.pct ~ aspect + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~postfire_ppt) 
+summary(grass.top.model.climtopo)
+AIC(grass.top.model.climtopo)
+BIC(grass.top.model.climtopo)
+r2_nakagawa(grass.top.model.climtopo)
+simulated <- simulateResiduals(fittedModel = grass.top.model.climtopo, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+regen.top.model.climtopo <- glmmTMB(regen.density ~ hli*aspect + postfire_ppt + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+summary(regen.top.model.climtopo)
+AIC(regen.top.model.climtopo)
+BIC(regen.top.model.climtopo)
+r2_nakagawa(regen.top.model.climtopo)
+simulated <- simulateResiduals(fittedModel = regen.top.model.climtopo, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+```
+
+### All Predictors
+```{r}
+seedling.top.model.all <- glmmTMB(seedling.pct ~ postfire_fitted_slope*postfire_ppt + relative_regrowth + (1|fire), mem.df.glmm, gaussian, ziformula = ~canopy_cover)
+summary(seedling.top.model.all)
+AIC(seedling.top.model.all)
+BIC(seedling.top.model.all)
+r2_nakagawa(seedling.top.model.all)
+simulated <- simulateResiduals(fittedModel = seedling.top.model.all, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+shrub.top.model.all <- glmmTMB(shrub.pct ~ delta_nbr + dnbr + postfire_fitted_slope + (1 | fire), mem.df.glmm, gaussian)
+summary(shrub.top.model.all)
+AIC(shrub.top.model.all)
+BIC(shrub.top.model.all)
+r2_nakagawa(shrub.top.model.all)
+simulated <- simulateResiduals(fittedModel = shrub.top.model.all, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+grass.top.model.all <- glmmTMB(grass.pct ~ postfire_tmean*postfire_fitted_slope + postfire_ppt + (1|fire), mem.df.glmm, gaussian, ziformula = ~postfire_fitted_slope)
+summary(grass.top.model.all)
+AIC(grass.top.model.all)
+BIC(grass.top.model.all)
+r2_nakagawa(grass.top.model.all)
+simulated <- simulateResiduals(fittedModel = grass.top.model.all, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+regen.top.model.all <- glmmTMB(regen.density ~ postfire_tmean*relative_regrowth + postfire_ppt + (1 | fire), mem.df.glmm, nbinom2, ziformula = ~1) 
+summary(regen.top.model.all)
+AIC(regen.top.model.all)
+BIC(regen.top.model.all)
+r2_nakagawa(regen.top.model.all)
+simulated <- simulateResiduals(fittedModel = regen.top.model.all, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+```
+
+# 2. TE Model Selections
+```{r}
+# trailing edge
+te.glmm.df <- mem.df.glmm %>% 
+  filter(TE_future == 'Y')
+
+# persistent forest
+forest.glmm.df <- mem.df.glmm %>% 
+  filter(TE_future == 'N')
+```
+
+### Models
+```{r}
+# trailing edge
+shrub.te.glmm <- glmmTMB(shrub.pct ~ postfire_fitted_slope + postfire_ppt + (1|fire), te.glmm.df, gaussian, ziformula = ~1)
+seedling.te.glmm <- glmmTMB(seedling.pct ~ postfire_fitted_slope + postfire_ppt + (1|fire), te.glmm.df, gaussian, ziformula = ~1)
+grass.te.glmm <- glmmTMB(grass.pct ~ postfire_fitted_slope + postfire_ppt + (1|fire), te.glmm.df, gaussian, ziformula = ~1)
+regen.te.glmm <- glmmTMB(regen.density ~ postfire_fitted_slope + postfire_ppt + (1|fire), te.glmm.df, nbinom2, ziformula = ~1)
+
+# persistent forest
+shrub.pf.glmm <- glmmTMB(shrub.pct ~ postfire_fitted_slope + postfire_ppt + (1|fire), forest.glmm.df, gaussian, ziformula = ~1)
+seedling.pf.glmm <- glmmTMB(seedling.pct ~ postfire_fitted_slope + postfire_ppt + (1|fire), forest.glmm.df, gaussian, ziformula = ~1)
+grass.pf.glmm <- glmmTMB(grass.pct ~ postfire_fitted_slope + postfire_ppt + (1|fire), forest.glmm.df, gaussian, ziformula = ~1)
+regen.pf.glmm <- glmmTMB(regen.density ~ postfire_fitted_slope + postfire_ppt + (1|fire), forest.glmm.df, nbinom2, ziformula = ~1)
+```
+
+### Models (w/ interaction term)
+```{r}
+shrub.te.pf.glmm <- glmmTMB(shrub.pct ~ postfire_fitted_slope*TE_future + postfire_ppt*TE_future + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+seedling.te.pf.glmm <- glmmTMB(seedling.pct ~ postfire_fitted_slope*TE_future + postfire_ppt*TE_future + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+grass.te.pf.glmm <- glmmTMB(grass.pct ~ postfire_fitted_slope*TE_future + postfire_ppt*TE_future + (1|fire), mem.df.glmm, gaussian, ziformula = ~1)
+regen.te.pf.glmm <- glmmTMB(regen.density ~ postfire_fitted_slope*TE_future + postfire_ppt*TE_future + (1|fire), mem.df.glmm, nbinom2, ziformula = ~1)
+```
+
+### Diagnostics
+```{r}
+# trailing edge
+simulated <- simulateResiduals(fittedModel = shrub.te.glmm, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = seedling.te.glmm, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks decent
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = grass.te.glmm, n = 1000)
+plot(simulated) # looks a bit funky
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = regen.te.glmm, n = 1000)
+plot(simulated) # looks pretty good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks okay
+
+# persistent forest
+simulated <- simulateResiduals(fittedModel = shrub.pf.glmm, n = 1000)
+plot(simulated) # looks pretty good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = seedling.pf.glmm, n = 1000)
+plot(simulated) # looks pretty good
+testZeroInflation(simulated) # looks decent
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = grass.pf.glmm, n = 1000)
+plot(simulated) # looks a bit funky
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = regen.pf.glmm, n = 1000)
+plot(simulated) # looks pretty good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+# interactions
+simulated <- simulateResiduals(fittedModel = shrub.te.pf.glmm, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = seedling.te.pf.glmm, n = 1000)
+plot(simulated) # looks funky
+testZeroInflation(simulated) # looks decent
+testUniformity(simulated) # does not look good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = grass.te.pf.glmm, n = 1000)
+plot(simulated) # looks pretty good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+
+simulated <- simulateResiduals(fittedModel = regen.te.pf.glmm, n = 1000)
+plot(simulated) # looks good
+testZeroInflation(simulated) # looks good
+testUniformity(simulated) # looks good
+testDispersion(simulated) # looks good
+```
+
+### Model Output Dataframe
+```{r}
+shrub.te.model.output <- tidy(shrub.te.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'shrub.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+seedling.te.model.output <- tidy(seedling.te.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'seedling.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+grass.te.model.output <- tidy(grass.te.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'grass.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+regen.te.model.output <- tidy(regen.te.glmm)%>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'regen.density') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+te.model.output <- rbind(shrub.te.model.output, grass.te.model.output, seedling.te.model.output, regen.te.model.output) %>% 
+  mutate(trailing.edge = 'yes')
+
+shrub.pf.model.output <- tidy(shrub.pf.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'shrub.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+seedling.pf.model.output <- tidy(seedling.pf.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'seedling.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+grass.pf.model.output <- tidy(grass.pf.glmm)%>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'grass.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+regen.pf.model.output <- tidy(regen.pf.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'regen.density') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+pf.model.output <- rbind(shrub.pf.model.output, grass.pf.model.output, seedling.pf.model.output, regen.pf.model.output) %>% 
+  mutate(trailing.edge = 'no')
+
+both.model.output <- rbind(te.model.output, pf.model.output) %>% 
+  mutate(sig = case_when(p.value > 0.05 ~ 'no',
+                         p.value < 0.05 ~ 'yes'))  %>% 
+  mutate(trailing.edge.sig = case_when(sig == 'yes' & trailing.edge == 'yes' ~ 'yes*',
+                                       sig == 'yes' & trailing.edge == 'no' ~ 'no*',
+                                       sig == 'no' & trailing.edge == 'yes' ~ 'yes',
+                                       sig == 'no' & trailing.edge == 'no' ~ 'no'))
+```
+
+#### Interactions
+```{r}
+shrub.te.pf.model.output <- tidy(shrub.te.pf.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'shrub.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+seedling.te.pf.model.output <- tidy(seedling.te.pf.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'seedling.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+grass.te.pf.model.output <- tidy(grass.te.pf.glmm) %>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'grass.pct') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+regen.te.pf.model.output <- tidy(regen.te.pf.glmm)%>% 
+  select(effect, component, term, estimate, std.error, p.value) %>% 
+  mutate(response = 'regen.density') %>% 
+  filter(effect == 'fixed', component == 'cond') %>% 
+  select(-component)
+te.pf.model.output <- rbind(shrub.te.pf.model.output, grass.te.pf.model.output, seedling.te.pf.model.output, regen.te.pf.model.output) %>% 
+  mutate(sig = case_when(p.value > 0.05 ~ 'no',
+                         p.value < 0.05 ~ 'yes')) 
+```
+
+### Figure
+Was tough for me to get everything how I liked it so I ended up approaching it in a rather convoluted fashion
+```{r}
+# Not interested in intercept; taking % grass out of this figuree
+both.model.output.plottable <- both.model.output %>% 
+  filter(term != '(Intercept)') %>% 
+  filter(response != 'grass.pct')
+
+# Setting up dummy dataframe to expand limits
+term <- c(rep('postfire_fitted_slope', 3))
+response <- c('seedling.pct', 'shrub.pct', 'regen.density')
+x.val <- c(-20.2, -21, -3)
+dummy <- data.frame(term, response, x.val)
+
+# Facet label (response var) names
+response_var_names <- c(seedling.pct = '% Juvenile conifer',
+                     shrub.pct = '% Shrub',
+                     regen.density = 'Regeneration density',
+                     grass.pct = '% Grass')
+
+plot <- both.model.output.plottable %>% 
+  ggplot(aes(y = term, color = term)) +
+    geom_point(aes(x = estimate, shape = trailing.edge.sig), 
+               size = 6.5, 
+       position=position_nudge(y=ifelse(both.model.output.plottable$trailing.edge == 'yes',
+                                                0.25, -0.25))) +
+    geom_linerange(aes(xmin = estimate-std.error, xmax = estimate+std.error), linewidth = 0.5,
+                  position=position_nudge(y=ifelse(both.model.output.plottable$trailing.edge == 'yes',
+                                                0.25, -0.25))) +
+    labs(x = 'Model Estimate') +
+    geom_vline(xintercept = 0, linetype = 'dashed') +
+    geom_blank(aes(x = x.val, y = term), data = dummy) +
+    facet_wrap(~response, ncol = 1, strip.position = 'left', scales = 'free',
+               labeller = as_labeller(response_var_names)) +
+    scale_shape_manual(values = c(1, 19, 2, 17)) +
+    scale_color_manual(values = c('darkred', 'darkblue')) +
+    theme_bw() +
+    theme(strip.background = element_blank(),
+          strip.placement = 'outside', 
+          panel.grid = element_blank(),
+          axis.text.y = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.position = 'none',
+          strip.text = element_text(size = 20, face = 'bold'),
+          axis.text.x = element_text(size = 18),
+          axis.title.x = element_text(size = 18, face = 'bold'))
+plot
+
+# Legend 1
+legend1 <- get_legend(both.model.output.plottable %>% 
+  mutate(term = case_when(term == 'postfire_fitted_slope' ~ 'Post-fire Fitted Slope',
+                          term == 'postfire_ppt' ~ 'Post-fire Precipitation')) %>% 
+  mutate(sig = case_when(sig == 'yes' ~ 'p < 0.05',
+                          sig == 'no' ~ 'p > 0.05')) %>% 
+  ggplot(aes(y = term, color = term)) +
+    geom_point(aes(x = estimate, shape = sig), 
+               size = 5) +
+    geom_linerange(aes(xmin = estimate-std.error, xmax = estimate+std.error)) +
+    labs(color = 'Predictor', shape = 'P-Value') +
+    scale_shape_manual(values = c(19, 1)) +
+    scale_color_manual(values = c('darkred', 'darkblue')) +
+    theme_bw() +
+    theme(legend.position = 'top',
+          legend.text = element_text(size = 16),
+          legend.title = element_text(size = 16, face = 'bold')))
+
+# Legend 2
+legend2 <- get_legend(both.model.output.plottable %>% 
+  mutate(trailing.edge = case_when(trailing.edge == 'yes' ~ 'Trailing Edge',
+                          trailing.edge == 'no' ~ 'Persistent Forest')) %>% 
+  ggplot(aes(y = term)) +
+    geom_point(aes(x = estimate, shape = trailing.edge), 
+               size = 5) +
+    scale_shape_manual(values = c(19, 17)) +
+    theme_bw() +
+    theme(legend.position = 'top',
+          legend.text = element_text(size = 16, face = 'bold'),
+          legend.title = element_blank()))
+
+# Legends
+legends <- plot_grid(legend2, legend1, ncol = 1)
+legends
+
+# Arrange
+te_vs_pf_estimates_plot <- plot_grid(legends, plot, ncol = 1, rel_heights = c(1, 7))
+te_vs_pf_estimates_plot
+```
+
+#### Interactions
+Was tough for me to get everything how I liked it so I ended up approaching it in a rather convoluted fashion
+```{r}
+# Not interested in intercept; taking % grass out of this figure
+te.pf.model.output.plottable <- te.pf.model.output %>% 
+  filter(term != '(Intercept)')
+
+# Setting up dummy dataframe to expand limits
+term <- c(rep('PFFS', 4))
+response <- c('seedling.pct', 'shrub.pct', 'regen.density', 'grass.pct')
+x.val <- c(-21.05, -20.3, -1.8, -18.4)
+dummy <- data.frame(term, response, x.val)
+
+plot.int <- te.pf.model.output.plottable %>% 
+  mutate(term = case_when(term == 'postfire_fitted_slope' ~ 'PFFS',
+                          term == 'TE_futureY' ~ 'Trailing \nedge',
+                          term == 'postfire_ppt' ~ 'Precip.',
+                          term == 'postfire_fitted_slope:TE_futureY' ~ 'PFFS \n x TE',
+                          term == 'TE_futureY:postfire_ppt' ~ 'Precip. \n x TE')) %>% 
+  ggplot(aes(y = term)) +
+    geom_point(aes(x = estimate, shape = sig), 
+               size = 10.5) +
+    geom_linerange(aes(xmin = estimate-std.error, xmax = estimate+std.error), linewidth = 1) +
+    labs(x = 'Model estimate') +
+    geom_vline(xintercept = 0, linetype = 'dashed', linewidth = 0.7) +
+    geom_blank(aes(x = x.val, y = term), data = dummy) +
+    facet_wrap(~factor(response, c('regen.density', 'seedling.pct', 'shrub.pct', 'grass.pct')), ncol = 2, strip.position = 'left', scales = 'free',
+               labeller = as_labeller(response_var_names)) +
+    scale_shape_manual(values = c(1, 19)) +
+    theme_bw() +
+    theme(strip.background = element_blank(),
+          strip.placement = 'outside', 
+          panel.grid = element_blank(),
+          axis.text.y = element_text(size = 20, angle = 45, hjust = 0.5),
+          axis.title.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          legend.position = 'none',
+          strip.text = element_text(size = 24, face = 'bold'),
+          axis.text.x = element_text(size = 20),
+          axis.title.x = element_text(size = 22, face = 'bold'))
+plot.int
+
+# Legend 1
+legend.int1 <- get_legend(te.pf.model.output.plottable %>% 
+  mutate(sig = case_when(sig == 'yes' ~ 'p < 0.05',
+                          sig == 'no' ~ 'p > 0.05')) %>% 
+  ggplot(aes(y = term)) +
+    geom_point(aes(x = estimate, shape = sig), 
+               size = 10.5) +
+    geom_linerange(aes(xmin = estimate-std.error, xmax = estimate+std.error), linewidth = 1) +
+    labs(color = 'Predictor', shape = 'P-value') +
+    scale_shape_manual(values = c(19, 1)) +
+    theme_bw() +
+    theme(legend.position = 'top',
+          legend.text = element_text(size = 25),
+          legend.title = element_text(size = 25, face = 'bold')))
+
+# Arrange
+te_vs_pf_estimates_int_plot <- plot_grid(legend.int1, plot.int, ncol = 1, rel_heights = c(1, 9))
+te_vs_pf_estimates_int_plot
+```

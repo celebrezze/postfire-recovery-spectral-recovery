@@ -1,0 +1,860 @@
+---
+title: "Climate and Other Scatterplots"
+author: "Joe Celebrezze"
+date: "2023-11-24"
+output: html_document
+---
+
+updated_main_analyses_and_figures was getting rather long and unruly, so I split it into three scripts -- one focused on EDA and cluster analyses, one on trailing edge vs. persistent forest, and one on climate and other scatterplots/regressions (this one)
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+here = here::here
+
+source(here("scripts", "source_code.R"))
+
+# Blue Mtns. Raster
+blue.mtns.ras <- raster(here('data', 'blue_mtns_misc', 'bluemtnsras.tif'))
+# Postfire Regen. Data (Davis et al)
+postfire.regen <- raster(here('data', 'regen_prob', 'postfire_regen_prob.tif'))
+
+wide.df <- read.csv(here('data', 'processed_data', 'wide.df.csv')) %>% 
+  select(-X)
+colnames(wide.df)[14:37] <- c(0:23)
+long.df <- read.csv(here('data', 'processed_data', 'long.df.csv')) %>% 
+  select(-X)
+field.data.both <- read.csv(here('data', 'processed_data', 'field.data.both.csv')) %>% 
+  select(-X)
+
+# from clusters_and_eda
+field.cluster.df <- read.csv(here('data', 'processed_data', 'field.cluster.df.csv'))
+#long.field.cluster.df <- read.csv(here('data', 'processed_data', 'long.field.cluster.df.csv'))
+wide.cluster.df <- read.csv(here('data', 'processed_data', 'wide.cluster.df.csv'))
+
+long.df.avg <- long.df %>% 
+  group_by(relative_year) %>% 
+  summarise(avg_nbr = mean(nbr), avg_delta_nbr = mean(yearly_delta_nbr))
+```
+
+# Data Wrangling
+```{r}
+main.df <- merge(wide.cluster.df, field.data.both, by = 'Plot') %>% 
+  select(-Long.y, -Lat.y, -Fire) %>% 
+  rename(Long = Long.x, Lat = Lat.x) %>% 
+  mutate(aspect = as.numeric(aspect),
+         cluster = as.factor(cluster),
+         log.seedling.density = log(seedling.density),
+         log.regen.density = log(regen.density)) %>% 
+  mutate(log.seedling.density = ifelse(log.seedling.density < 0, 0, log.seedling.density),
+         log.regen.density = ifelse(log.regen.density < 0, 0, log.regen.density)) %>%  # making any -Inf values for log.seedling.density and log.regen.density = 0
+  distinct() # omitting duplicate values
+```
+
+# Climate - Initial Look
+Because climate is significantly driving the spectral trajectories, it is worth looking into this further, but only with our field data
+
+## T-Tests
+Repeating stats tests and boxplots from above but only with field sites
+
+Precip
+```{r}
+# Normal distribution?
+precip.lm <- lm(data = main.df, precip ~ cluster)
+plot(precip.lm) # it's ... okay
+# Equal variances?
+var.test(data = main.df, precip ~ cluster) # Equal variances
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(precip)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(precip)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+
+Mean Temp.
+```{r}
+# Normal distribution?
+tmean.lm <- lm(data = main.df, tmean ~ cluster)
+plot(tmean.lm) # not great
+# Equal variances?
+var.test(data = main.df, tmean ~ cluster) # No, variances not equal
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(tmean)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(tmean)
+t.test(c1, c2, var.equal = F) # n.s.
+```
+
+Max VPD
+```{r}
+# Normal distribution?
+vpdmax.lm <- lm(data = main.df, vpdmax ~ cluster)
+plot(vpdmax.lm) # Not bad
+# Equal variances?
+var.test(data = main.df, vpdmax ~ cluster) # Yes
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(vpdmax)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(vpdmax)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+
+CHILI
+```{r}
+# Normal distribution?
+hli.lm <- lm(data = main.df, hli ~ cluster)
+plot(hli.lm) # Not bad
+# Equal variances?
+var.test(data = main.df, hli ~ cluster) # Yes
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(hli)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(hli)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+
+Unlike the previous iteration, with only our field data, we do not see significant differences between the two clusters in climate variables. If I had to guess, this is due to the serotinous response and the shrub dominant sites being lumped into the same cluster and also likely due to a small sample size.
+
+## Boxplots
+```{r}
+main.df %>% 
+  mutate(cluster = as.factor(cluster)) %>% 
+  pivot_longer(cols = c(precip, tmean, vpdmax, hli), names_to = 'climate_var', values_to = 'climate_val') %>% 
+  ggplot(aes(x = cluster, y = climate_val, color = cluster)) +
+    geom_boxplot(outlier.shape = NA, size = 0.8) +
+    geom_jitter(width = 0.25, alpha = 0.3) +
+    labs(x = 'Spectral Trajectory Cluster') +
+    facet_wrap(~climate_var, scales = 'free', labeller = as_labeller(climate_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 16),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+```
+
+## Regressions, Scatterplots
+Now the question is, what (if anything) *can* our climate variables predict in our dataset?
+
+To figure this out, I think doing simple multivariate models predicting our field data is a good start
+
+Scale variables
+```{r}
+regressions.df <- main.df %>% 
+  mutate(grass.pct = scale(grass.pct), herb.pct = scale(herb.pct), shrub.pct = scale(shrub.pct), seedling.pct = scale(seedling.pct), log.seedling.density = scale(log.seedling.density), log.regen.density = scale(log.regen.density), precip = scale(precip), tmean = scale(tmean), vpdmax = scale(vpdmax), hli = scale(hli))
+```
+
+Colinearity check
+```{r}
+library(performance)
+grass.mod <- lm(grass.pct ~ precip + tmean + vpdmax + hli, data = regressions.df)
+multicollinearity(grass.mod) # precip and VPD are collinear (makes sense), so will do models with either/or
+```
+
+% Grass
+```{r}
+grass.mod <- lm(grass.pct ~ precip + tmean + hli, data = regressions.df)
+anova(grass.mod) # significant portion of variance explained by precip
+summary(grass.mod) # precip is significant
+```
+
+% Herb
+```{r}
+herb.mod <- lm(herb.pct ~ precip + tmean + hli, data = regressions.df)
+anova(herb.mod) # precip and tmean significant
+summary(herb.mod) # tmean significant
+```
+
+% Shrub
+```{r}
+shrub.mod <- lm(shrub.pct ~ precip + tmean + hli, data = regressions.df)
+anova(shrub.mod) # no significance
+summary(shrub.mod) # no significance
+```
+
+% Seedling
+```{r}
+seedling.mod <- lm(seedling.pct ~ precip + tmean + hli, data = regressions.df)
+anova(seedling.mod) # significant portion of variance explained by precip and tmean
+summary(seedling.mod) # precip and tmean are significant predictors
+```
+
+Log Seedling Density
+```{r}
+seedling.density.mod <- lm(log.seedling.density ~ precip + tmean + hli, data = regressions.df)
+anova(seedling.density.mod) # significant portion of variance explained by precip and tmean
+summary(seedling.density.mod) # tmean and precip are significant predictors
+```
+
+Log Regen Density
+```{r}
+regen.density.mod <- lm(log.regen.density ~ precip + tmean + hli, data = regressions.df)
+anova(regen.density.mod) # significant portion of variance explained by precip and tmean
+summary(regen.density.mod) # tmean and precip are significant predictors
+```
+
+Canopy Cover
+```{r}
+densiometer.mod <- lm(densiometer ~ precip + tmean + hli, data = regressions.df)
+anova(densiometer.mod) # significant portion of variance explained by precip
+summary(densiometer.mod) # precip is significant predictor
+```
+
+Scatterplots
+```{r}
+main.df %>% 
+  pivot_longer(cols = c(precip, tmean, vpdmax, hli), names_to = 'climate_var', values_to = 'climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, herb.pct, shrub.pct, seedling.pct, densiometer, log.seedling.density, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = climate_val, y = field_val)) +
+    geom_point(alpha = 0.65, color = 'gray30') +
+    geom_smooth(method = 'lm', color = 'black', alpha = 0.6) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle') +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left') +
+    facet_grid(field_var ~ climate_var, scales = 'free', labeller = labeller(climate_var = climate_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'climate.vs.field.regressions.png'), height = 11, width = 16)
+
+main.df %>% 
+  pivot_longer(cols = c(precip, tmean, vpdmax, hli), names_to = 'climate_var', values_to = 'climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = climate_val, y = field_val)) +
+    geom_point(alpha = 0.65, color = 'gray30') +
+    geom_smooth(method = 'lm', color = 'black', alpha = 0.6) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.6) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.6) +
+    facet_grid(field_var ~ climate_var, scales = 'free', labeller = labeller(climate_var = climate_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'abridged.climate.vs.field.regressions.png'), height = 9, width = 16)
+```
+
+
+
+
+# Yearly Climate Data
+```{r}
+# correlation plot
+long.df %>% 
+  select(nbr, nbr_fitted, yearly_delta_nbr, ppt, tmin, tmax, vpdmin, vpdmax) %>% 
+  ggcorr(label = T)
+
+# time series
+long.te.avg.df <- long.df %>% 
+  group_by(TE_future, relative_year) %>% 
+  summarise(ppt = mean(ppt), tmin = mean(tmin), tmax = mean(tmax), vpdmin = mean(vpdmin),
+            vpdmax = mean(vpdmax), nbr = mean(nbr))
+
+yearly_var_names <- c(yearly_delta_nbr = 'NBR (baseline- \nadjusted)',
+                     ppt = 'Mean annual \nprecipitation',
+                     vpdmax = 'Mean annual \nmaximum VPD',
+                     tmean = 'Mean annual \ntemperature')
+
+fire_names <- c(Easy = "Easy", HR = "Hash Rock",
+               School = "School", Wheeler = "Wheeler Point",
+               Flagtail = "Flagtail", Calamity = "Calamity Complex",
+               BC = "Bridge Creek", Egley = "Egley Complex")
+
+long.fire.avgs <- long.df %>% 
+  group_by(fire, relative_year) %>% 
+  summarise(ppt = mean(ppt), tmean = mean(tmean), vpdmax = mean(vpdmax), yearly_delta_nbr = mean(yearly_delta_nbr)) %>% 
+  pivot_longer(cols = c(ppt, tmean, vpdmax, yearly_delta_nbr), values_to = 'val', names_to = 'var')
+
+long.df %>% 
+  pivot_longer(cols = c(ppt, tmean, vpdmax, yearly_delta_nbr), values_to = 'val', names_to = 'var') %>% 
+  ggplot(aes(x = relative_year-10, y = val)) +
+    geom_point(alpha = 0.3, size = 0.5, color = 'gray40') +
+    #geom_smooth(alpha = 0.6, color = 'gray20', fill = 'gray35') +
+    geom_line(aes(x = relative_year-10, y = val), data = long.fire.avgs, alpha = 0.8, linewidth = 1, color = 'gray20') +
+    facet_grid(var~fire, scales = 'free', labeller = labeller(fire = fire_names, var = yearly_var_names), switch = 'y') + 
+    labs(x = 'Years post-fire', y = '') +
+    theme_bw() +
+    theme(axis.title = element_text(face = 'bold', size = 16),
+          axis.text = element_text(size = 12),
+          strip.text = element_text(size = 14, face = 'bold'),
+          strip.background.y = element_blank(),
+          strip.placement.y = 'outside')
+ggsave(here('figures', 'supp_figures', 'yearly.climate.nbr.timeseries.png'), height = 8, width = 16)
+```
+
+## Vs. Spectral Recovery
+```{r}
+wide.cluster.df %>%
+  pivot_longer(cols = c(postfire_ppt, postfire_tmean, postfire_tmax, postfire_tmin, postfire_vpdmax, postfire_vpdmin), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(relative_regrowth, pct_recovery, delta_nbr, postfire_fitted_slope), names_to = 'spectral_var', values_to = 'spectral_val') %>% 
+  ggplot(aes(x = postfire_climate_val, y = spectral_val)) +
+    geom_point(alpha = 0.75, color = 'darkslateblue') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.1) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.1) +
+    labs(x = 'Postfire (1-5yr) Climate Values') +
+    facet_grid(spectral_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, spectral_var = spectral_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'postfire.climate.vs.spectral.regressions.png'), height = 11, width = 20)
+```
+
+### Abridged
+```{r}
+wide.cluster.df %>%
+  pivot_longer(cols = c(postfire_ppt, postfire_tmean, postfire_vpdmax), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(relative_regrowth, pct_recovery, delta_nbr, postfire_fitted_slope), names_to = 'spectral_var', values_to = 'spectral_val') %>% 
+  ggplot(aes(x = postfire_climate_val, y = spectral_val)) +
+    geom_point(alpha = 0.75, color = 'darkslateblue') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.1) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.1) +
+    labs(x = 'Average (1 to 5 years) Post-fire Climate Values', y = 'Spectral Trajectory Metrics') +
+    facet_grid(spectral_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, spectral_var = spectral_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          #axis.title.y = element_blank(),
+          axis.title = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'abridged.postfire.climate.vs.spectral.regressions.png'), height = 11, width = 20)
+```
+
+
+## Vs. Field Data
+```{r}
+field.cluster.df %>% 
+  pivot_longer(cols = c(postfire_ppt, postfire_tmean, postfire_tmax, postfire_tmin, postfire_vpdmax, postfire_vpdmin), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, herb.pct, shrub.pct, seedling.pct, densiometer, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = postfire_climate_val, y = field_val)) +
+    geom_point(alpha = 0.75, color = 'darkgreen') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.1) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.1) +
+    labs(x = 'Postfire (1-5yr) Climate Values') +
+    facet_grid(field_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'postfire.climate.vs.field.regressions.png'), height = 11, width = 20)
+```
+
+### Abridged
+```{r}
+field.cluster.df %>% 
+  pivot_longer(cols = c(postfire_ppt, postfire_tmean, postfire_vpdmax), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = postfire_climate_val, y = field_val)) +
+    geom_point(alpha = 0.75, color = 'darkgreen') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.1) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.1) +
+    labs(x = 'Average (1 to 5 years) Post-fire Climate Values', y = 'Field Metrics') +
+    facet_grid(field_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          #axis.title.y = element_blank(),
+          axis.title = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'abridged.postfire.climate.vs.field.regressions.png'), height = 11, width = 20)
+```
+
+### By Fire
+```{r}
+fires <- c("Easy", 'HR', "School", 'Wheeler', "Flagtail", 'Calamity',
+           'BC', 'Egley')
+plot.list <- list()
+
+for(i in 1:length(fires)){
+plot <- field.cluster.df %>% 
+  filter(fire == fires[i]) %>% 
+  pivot_longer(cols = c(postfire_ppt, postfire_tmean, postfire_vpdmax), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = postfire_climate_val, y = field_val)) +
+    geom_point(alpha = 0.75, color = 'darkgreen') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 3) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 3) +
+    labs(x = 'Post-fire Climate ', y = 'Field Metrics', title = fires[i]) +
+    facet_grid(field_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          #axis.title.y = element_blank(),
+          axis.title = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+plot.list[[i]] <- plot
+}
+
+plot.list[[1]]
+plot.list[[2]]
+plot.list[[3]]
+plot.list[[4]]
+plot.list[[5]]
+plot.list[[6]]
+plot.list[[7]]
+plot.list[[8]]
+```
+
+## Spectral and Field
+Removing random effect of fire (remef)
+```{r}
+field.cluster.df.remef <- field.cluster.df
+
+grass.mem <- lmer(grass.pct ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$grass.pct <- remef(grass.mem, ran = "all", keep.intercept = FALSE)
+
+shrub.mem <- lmer(shrub.pct ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$shrub.pct <- remef(shrub.mem, ran = "all", keep.intercept = FALSE)
+
+seedling.mem <- lmer(seedling.pct ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$seedling.pct <- remef(seedling.mem, ran = "all", keep.intercept = FALSE)
+
+density.mem <- lmer(log.seedling.density ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$log.seedling.density <- remef(density.mem, ran = "all", keep.intercept = FALSE)
+
+regen.mem <- lmer(log.regen.density ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$log.regen.density <- remef(regen.mem, ran = "all", keep.intercept = FALSE)
+
+pfslope.mem <- lmer(postfire_fitted_slope ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$postfire_fitted_slope <- remef(pfslope.mem, ran = "all", keep.intercept = FALSE)
+
+pctrec.mem <- lmer(pct_recovery ~ postfire_ppt + postfire_tmin + postfire_tmax + postfire_vpdmax + (1|fire), data = field.cluster.df.remef)
+field.cluster.df.remef$pct_recovery <- remef(pctrec.mem, ran = "all", keep.intercept = FALSE)
+```
+
+### Non-REMEF
+```{r}
+resp_var_names <- c(grass.pct = '% Grass',
+                     shrub.pct = '% Shrub',
+                     seedling.pct = '% Juvenile conifer',
+                     log.regen.density = 'Log Regen Density',
+                     pct_recovery = '% Recovery',
+                     postfire_fitted_slope = 'Postfire Fitted Slope')
+
+field.cluster.df %>% 
+  pivot_longer(cols = c(postfire_ppt, postfire_tmin, postfire_tmax, postfire_vpdmax), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density, pct_recovery, postfire_fitted_slope), values_to = 'resp_val', names_to = 'resp_var') %>%
+  mutate(resp_var = factor(resp_var)) %>% 
+  mutate(resp_var = fct_relevel(resp_var, c('shrub.pct', 'seedling.pct', 'grass.pct', 'log.regen.density', 'postfire_fitted_slope', 'pct_recovery'))) %>% 
+  mutate(resp_cat = case_when(
+    resp_var %in% c('shrub.pct', 'seedling.pct', 'grass.pct', 'log.regen.density') ~ 'Field Data',
+    resp_var %in% c('postfire_fitted_slope', 'pct_recovery') ~ 'Spectral Data',
+  )) %>% 
+  ggplot(aes(x = postfire_climate_val, y = resp_val)) +
+    geom_point(alpha = 0.75, aes(color = resp_cat), size = 2) +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    scale_color_manual(values = c('darkgreen', 'darkslateblue')) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.5) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.5) +
+    labs(x = 'Postfire (1-5yr) Climate Values') +
+    facet_grid(resp_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, resp_var = resp_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'postfire.climate.main.regressions.png'), height = 12, width = 17)
+```
+
+### REMEF
+```{r}
+field.cluster.df.remef %>% 
+  pivot_longer(cols = c(postfire_ppt, postfire_tmin, postfire_tmax, postfire_vpdmax), names_to = 'postfire_climate_var', values_to = 'postfire_climate_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density, pct_recovery, postfire_fitted_slope), values_to = 'resp_val', names_to = 'resp_var') %>%
+  mutate(resp_var = factor(resp_var)) %>% 
+  mutate(resp_var = fct_relevel(resp_var, c('shrub.pct', 'seedling.pct', 'grass.pct', 'log.regen.density', 'postfire_fitted_slope', 'pct_recovery'))) %>% 
+  mutate(resp_cat = case_when(
+    resp_var %in% c('shrub.pct', 'seedling.pct', 'grass.pct', 'log.regen.density') ~ 'Field Data',
+    resp_var %in% c('postfire_fitted_slope', 'pct_recovery') ~ 'Spectral Data',
+  )) %>% 
+  ggplot(aes(x = postfire_climate_val, y = resp_val)) +
+    geom_point(alpha = 0.75, aes(color = resp_cat), size = 2) +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    scale_color_manual(values = c('darkgreen', 'darkslateblue')) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.5) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.5) +
+    labs(x = 'Postfire (1-5yr) Climate Values') +
+    facet_grid(resp_var ~ postfire_climate_var, scales = 'free', labeller = labeller(postfire_climate_var = pf_climate_var_names, resp_var = resp_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'postfire.climate.remef.regressions.png'), height = 12, width = 17)
+```
+
+# ---------------------
+# Other Scatterplots
+
+# Comparing to Postfire Recovery Probability (Davis et. al.)
+Maybe look into further, but it feels sort of like reinventing the wheel to a degree
+```{r}
+field.cluster.df <- field.cluster.df %>% 
+  rename(regen_prob = re.0gen_prob)
+
+field.cluster.df %>% 
+  drop_na(regen_prob) %>% 
+  ggplot(aes(x = as.factor(field.cluster), y = regen_prob)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    labs(x = 'Field Data Cluster', y = 'Postfire Recovery Probability') +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_text(face = 'bold', size = 16),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 12))
+
+field.cluster.df %>% 
+  drop_na(regen_prob) %>% 
+  ggplot(aes(x = cluster, y = regen_prob)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    labs(x = 'Spectral Trajectory Cluster', y = 'Postfire Recovery Probability') +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_text(face = 'bold', size = 16),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 12))
+#ggsave(here('figures', 'field.cluster.field.boxplots.png'), height = 8, width = 9)
+
+# Normal distribution?
+regen.lm1 <- lm(data = field.cluster.df, regen_prob ~ cluster)
+plot(regen.lm1) # it's good
+# Equal variances?
+var.test(data = field.cluster.df, regen_prob ~ cluster) # Equal variances
+# T-test
+c1 <- field.cluster.df %>% 
+  filter(cluster == 1) %>% 
+  select(regen_prob)
+c2 <- field.cluster.df %>% 
+  filter(cluster == 2) %>% 
+  select(regen_prob)
+t.test(c1, c2, var.equal = T) # n.s.
+
+
+# Regressions
+
+## Field Data ##
+grass.regen.lm <- lm(data = field.cluster.df, grass.pct ~ regen_prob)
+anova(grass.regen.lm) # sig.
+summary(grass.regen.lm) # sig.
+
+herb.regen.lm <- lm(data = field.cluster.df, herb.pct ~ regen_prob)
+anova(herb.regen.lm) # ns
+summary(herb.regen.lm) # ns
+
+shrub.regen.lm <- lm(data = field.cluster.df, shrub.pct ~ regen_prob)
+anova(shrub.regen.lm) # ns
+summary(shrub.regen.lm) # ns
+
+seedling.regen.lm <- lm(data = field.cluster.df, seedling.pct ~ regen_prob)
+anova(seedling.regen.lm) # sig
+summary(seedling.regen.lm) # sig
+
+seedling.density.regen.lm <- lm(data = field.cluster.df, log.seedling.density ~ regen_prob)
+anova(seedling.density.regen.lm) # ns
+summary(seedling.density.regen.lm) # ns
+
+regen.density.regen.lm <- lm(data = field.cluster.df, log.regen.density ~ regen_prob)
+anova(regen.density.regen.lm) # ns
+summary(regen.density.regen.lm) # ns
+
+densiometer.regen.lm <- lm(data = field.cluster.df, densiometer ~ regen_prob)
+anova(densiometer.regen.lm) # ns
+summary(densiometer.regen.lm) # ns
+
+## Spectral Trajectory ##
+relreg.regen.lm <- lm(data = field.cluster.df, relative_regrowth ~ regen_prob)
+anova(relreg.regen.lm) # ns
+summary(relreg.regen.lm) # ns
+
+pctrec.regen.lm <- lm(data = field.cluster.df, pct_recovery ~ regen_prob)
+anova(pctrec.regen.lm) # ns
+summary(pctrec.regen.lm) # ns
+
+fitted.slope.regen.lm <- lm(data = field.cluster.df, postfire_fitted_slope ~ regen_prob)
+anova(fitted.slope.regen.lm) # ns
+summary(fitted.slope.regen.lm) # ns
+
+deltanbr.regen.lm <- lm(data = field.cluster.df, delta_nbr ~ regen_prob)
+anova(deltanbr.regen.lm) # ns
+summary(deltanbr.regen.lm) # ns
+
+# Scatterplots
+field.cluster.df %>% 
+  pivot_longer(cols = c(grass.pct, herb.pct, shrub.pct, seedling.pct, densiometer, log.regen.density), names_to = 'var', values_to = 'val') %>% 
+  ggplot(aes(x = regen_prob, y = val)) +
+    geom_point(alpha = 0.65, color = 'gray30') +
+    geom_smooth(method = 'lm', color = 'black', alpha = 0.6) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle') +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left') +
+    facet_wrap( ~ var, scales = 'free', labeller = labeller(var = field_var_names)) +
+    theme_bw() +
+    labs(x = 'Postfire Regen. Probability') +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'postfire.prob.vs.field.regressions.png'), height = 11, width = 16)
+
+field.cluster.df %>% 
+  pivot_longer(cols = c(relative_regrowth, pct_recovery, delta_nbr, postfire_fitted_slope), names_to = 'var', values_to = 'val') %>% 
+  ggplot(aes(x = regen_prob, y = val)) +
+    geom_point(alpha = 0.65, color = 'gray30') +
+    geom_smooth(method = 'lm', color = 'black', alpha = 0.6) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle') +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left') +
+    facet_wrap( ~ var, scales = 'free', labeller = labeller(var = spectral_var_names)) +
+    theme_bw() +
+    labs(x = 'Postfire Regen. Probability') +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'postfire.prob.vs.spectral.regressions.png'), height = 11, width = 16)
+```
+
+## Main Figure
+```{r}
+ggplot(aes(x = postfire_fitted_slope, y = regen.density), data = main.df) +
+  geom_point() +
+  labs(x = 'Post-fire fitted slope', y = 'Regen. density') +
+  theme_bw()
+
+var_names <- c(grass.pct = '% Grass',
+               shrub.pct = '% Shrub',
+               seedling.pct = '% Juvenile conifer',
+               green.pct = '% Green',
+               npv.pct = '% NPV',
+               log.seedling.density = 'Log seedling density',
+               log.regen.density = 'Log regen. density',
+               delta_nbr = 'Change in NBR',
+               pct_recovery = '% Recovery',
+               postfire_fitted_slope = 'Post-fire fitted slope',
+               relative_regrowth = 'Relative regrowth')
+
+# trying log.regen.density in place of log.seedling.density
+main.df %>% 
+  rename(regen_prob = `re.0gen_prob`) %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, delta_nbr, log.regen.density, relative_regrowth, pct_recovery, postfire_fitted_slope), names_to = 'var', values_to = 'val') %>% 
+  mutate(var = as.factor(var)) %>% 
+  mutate(var = fct_relevel(var, c('grass.pct', 'shrub.pct', 'seedling.pct', 'log.regen.density', 'relative_regrowth', 'pct_recovery', 'postfire_fitted_slope', 'delta_nbr'))) %>% 
+  mutate(var_cat = ifelse(var %in% c('grass.pct', 'shrub.pct', 'seedling.pct', 'log.regen.density'), 'field', 'spectral')) %>% 
+  ggplot(aes(x = regen_prob*100, y = val)) +
+    geom_point(aes(color = var_cat), alpha = 0.75, size = 2) +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    scale_color_manual(values = c('darkgreen', 'darkslateblue')) +
+    scale_x_continuous(limits = c(20, 70), breaks = c(25, 35, 45, 55, 65)) +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'left', size = 4.5) +
+    facet_wrap( ~ var, strip.position = 'left', scales = 'free_y', labeller = labeller(var = var_names), ncol = 4) +
+    theme_bw() +
+    labs(x = 'Post-fire regeneration probability (%)', y = 'Field/spectral metrics') +
+    theme(legend.position = 'none',
+          axis.title.x = element_text(face = 'bold', size = 20),
+          axis.title.y = element_blank(),
+          axis.text = element_text(size = 16),
+          strip.text = element_text(face = 'bold', size = 18),
+          strip.placement = 'outside',
+          strip.background = element_blank())
+ggsave(here('figures', 'supp_figures', 'main.postfire.prob.regressions.png'), height = 6.5, width = 18)
+```
+
+# Spectral Metrics vs. Field Data
+```{r}
+field.cluster.df %>% 
+  pivot_longer(cols = c(relative_regrowth, pct_recovery, delta_nbr, postfire_fitted_slope), names_to = 'spectral_var', values_to = 'spectral_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = spectral_val, y = field_val)) +
+    geom_point(alpha = 0.75, color = 'darkgreen') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.1) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.1) +
+    labs(x = 'Spectral Trajectory Metrics', y = 'Field Metrics') +
+    facet_grid(field_var ~ spectral_var, scales = 'free', labeller = labeller(spectral_var = spectral_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          #axis.title.y = element_blank(),
+          axis.title = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+ggsave(here('figures', 'extra_figures', 'abridged.spectral.vs.field.regressions.png'), height = 11, width = 20)
+```
+
+## Figure S3
+R2 and p-values
+```{r}
+figS3_stats <- data.frame(spectral_var = c(rep(c('pct_recovery', 'postfire_fitted_slope', 'postfire_ppt', 'postfire_tmean', 'hli'), each = 4)), field_var = c(rep(c('grass.pct', 'shrub.pct', 'seedling.pct', 'log.regen.density'), 5)), r2 = c(' = 0.023', ' = 0.007', ' = 0.029', ' = 0.449', ' = 0.068', ' = 0.005', ' = 0.036', ' = 0.384', ' = 0.168', ' = 0.058', ' = 0.303', ' < 0.001', ' = 0.001', ' = 0.017', ' = 0.005', ' = 0.002', ' < 0.001', ' < 0.001', ' = 0.017', ' = 0.008'), p = c('p = 0.13', 'p = 0.42', 'p = 0.089', 'p < 0.001', 'p = 0.009', 'p = 0.48', 'p = 0.064', 'p < 0.001', 'p < 0.001', 'p = 0.016', 'p < 0.001', 'p = 0.99', 'p = 0.73', 'p = 0.19', 'p = 0.49', 'p = 0.70', 'p = 0.88', 'p = 0.95', 'p = 0.2', 'p = 0.36'))
+```
+
+Visualization
+```{r}
+field.cluster.df %>% 
+  pivot_longer(cols = c(pct_recovery, postfire_fitted_slope, postfire_ppt, postfire_tmean, hli), names_to = 'spectral_var', values_to = 'spectral_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  mutate(spectral_var = fct_relevel(as.factor(spectral_var), c('pct_recovery', 'postfire_fitted_slope', 'postfire_ppt', 'postfire_tmean', 'hli'))) %>% 
+  mutate(sv_col = case_when(spectral_var == 'pct_recovery' ~ 'a',
+                           spectral_var == 'postfire_fitted_slope' ~ 'a',
+                           spectral_var == 'postfire_ppt'~ 'b',
+                           spectral_var == 'hli'~ 'c',
+                           spectral_var == 'postfire_tmean'~ 'b')) %>% 
+  ggplot(aes(x = spectral_val, y = field_val)) +
+    geom_point(aes(color = sv_col), alpha = 0.6) +
+    geom_smooth(method = 'lm', color = 'black', alpha = 0.7, fill = 'gray80') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'left', size = 6) +
+    labs(x = 'Spectral (Red), Climatic (Blue), and Topographic (Brown) Metrics', y = 'Field Metrics') +
+    scale_color_manual(values = c('darkred', 'slateblue', '#C19A6B')) +
+    facet_grid(field_var ~ spectral_var, scales = 'free', labeller = labeller(spectral_var = spectral_clim_var_names, field_var = field_var_names), switch = 'both') +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_blank(),
+          #axis.title = element_text(face = 'bold', size = 20),
+          axis.text = element_text(size = 16),
+          strip.text = element_text(face = 'bold', size = 18),
+          strip.placement = 'outside',
+          strip.background = element_blank())
+ggsave(here('figures', 'supp_figures', 'abridged.spectral.climate.vs.field.regressions.png'), height = 11, width = 20)
+```
+
+
+## By Fire
+```{r}
+plot.list <- list()
+
+for(i in 1:length(fires)){
+plot <- field.cluster.df %>% 
+  filter(fire == fires[i]) %>% 
+  pivot_longer(cols = c(relative_regrowth, pct_recovery, delta_nbr, postfire_fitted_slope), names_to = 'spectral_var', values_to = 'spectral_val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density), values_to = 'field_val', names_to = 'field_var') %>%
+  ggplot(aes(x = spectral_val, y = field_val)) +
+    geom_point(alpha = 0.75, color = 'darkgreen') +
+    geom_smooth(method = 'lm', color = 'gray35', alpha = 0.5, fill = 'gray85') +
+    stat_cor(label.y.npc = 'top', label.x.npc = 'middle', size = 4.1) +
+    stat_regline_equation(label.y.npc = 'top', label.x.npc = 'left', size = 4.1) +
+    labs(x = 'Spectral Trajectory Metrics', y = 'Field Metrics', title = fires[i]) +
+    facet_grid(field_var ~ spectral_var, scales = 'free', labeller = labeller(spectral_var = spectral_var_names, field_var = field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          #axis.title.y = element_blank(),
+          axis.title = element_text(face = 'bold', size = 14),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 12))
+plot.list[[i]] <- plot
+}
+
+plot.list[[1]]
+plot.list[[2]]
+plot.list[[3]]
+plot.list[[4]]
+plot.list[[5]]
+plot.list[[6]]
+plot.list[[7]]
+plot.list[[8]]
+```
+
+```{r}
+field.cluster.df %>% 
+  pivot_longer(cols = c(relative_regrowth, pct_recovery, delta_nbr, postfire_fitted_slope), names_to = 'spectral_var', values_to = 'spectral_val') %>% 
+  pivot_longer(cols = c(shrub.pct, seedling.pct), values_to = 'field_val', names_to = 'field_var') %>%
+  mutate(field_var = ifelse(field_var == 'shrub.pct', '% Shrub', '% Juvenile conifer')) %>% 
+  ggplot(aes(x = spectral_val, y = field_val, color = field_var)) +
+    geom_point(alpha = 0.75) +
+    geom_smooth(method = 'lm', alpha = 0.5, fill = 'gray85') +
+    scale_color_manual(values = c('forestgreen', 'brown')) +
+    labs(x = 'Spectral Trajectory Metrics', y = 'Field Metrics', color = 'Field Metric') +
+    facet_grid(fire ~ spectral_var, scales = 'free', labeller = labeller(spectral_var = spectral_var_names, fire = fire_names)) +
+    theme_bw() +
+    theme(legend.position = 'top',
+          #axis.title.y = element_blank(),
+          axis.title = element_text(face = 'bold', size = 18),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 14),
+          legend.title = element_text(face = 'bold', size = 18),
+          legend.text = element_text(size = 16))
+ggsave(here('figures', 'extra_figures', 'fires.spectral.vs.field.regressions.png'), height = 15, width = 16)
+```
+
+# Spectral, Climate, Topography vs. Field Data: Boxplots
+
+## Data Wrangling
+Bins for spectral metrics, postfire climate, and CHILI
+```{r}
+field.cluster.df <- field.cluster.df %>% 
+  mutate(hli.bin = ntile(hli, 4), rr.bin = ntile(relative_regrowth, 4),
+         pffs.bin = ntile(postfire_fitted_slope, 4),
+         pft.bin = ntile(postfire_tmean, 4),
+         pfp.bin = ntile(postfire_ppt, 4))
+
+# prepping for visualization
+compiled.boxplots.df <- field.cluster.df %>% 
+  pivot_longer(cols = c(hli.bin, rr.bin, pffs.bin, pft.bin, pfp.bin), names_to = 'var',
+               values_to = 'val') %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, log.regen.density),
+               values_to = 'field_val', names_to = 'field_var') %>%
+  mutate(group = case_when(var == 'hli.bin' ~ 'Topography',
+                         var == 'rr.bin' ~ 'Spectral',
+                         var == 'pffs.bin' ~ 'Spectral',
+                         var == 'pft.bin' ~ 'Climate',
+                         var == 'pfp.bin' ~ 'Climate')) %>%
+  mutate(var = case_when(var == 'hli.bin' ~ 'Continuous Heat Load Index',
+                         var == 'rr.bin' ~ 'Relative Regrowth',
+                         var == 'pffs.bin' ~ 'Post-Fire Fitted Slope',
+                         var == 'pft.bin' ~ 'Post-Fire Temperature',
+                         var == 'pfp.bin' ~ 'Post-Fire Precipitation')) %>%
+  mutate(var = fct_relevel(as.factor(var), c('Relative Regrowth', 'Post-Fire Fitted Slope', 'Post-Fire Precipitation', 'Post-Fire Temperature', 'Continuous Heat Load Index'))) %>% 
+  mutate(group = fct_relevel(as.factor(group), c('Spectral', 'Climate', 'Topography')))
+  #mutate(val = case_when(val == 1 ~ '0-33.3%',
+  #                       val == 2 ~ '33.3-66.6%',
+  #                       val == 3 ~ '66.6-100%'))
+```
+
+## Visualization 1
+```{r}
+compiled.boxplots.df %>% 
+  ggplot(aes(x = as.factor(val), y = field_val, color = group)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_jitter(alpha = 0.1, width = 0.2, height = 0) +
+    facet_grid(field_var ~ var, scales = 'free',
+               labeller = labeller(field_var = field_var_names)) +
+    labs(x = 'Spectral, Climatic and Topographical Quartiles', y = 'Field Metric') +
+    scale_color_manual(values = c('darkred', 'slateblue', '#C19A6B')) +
+    theme_bw() +
+    theme(legend.position = 'bottom',
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          legend.title = element_blank(),
+          axis.title = element_text(face = 'bold', size = 18),
+          axis.text = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 14),
+          legend.text = element_text(size = 16))
+ggsave(here('figures', 'extra_figures', 'abridged.spectral.climate.vs.field.boxplots.png'), height = 10, width = 16.5)
+```
+

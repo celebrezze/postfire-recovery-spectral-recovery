@@ -1,0 +1,86 @@
+---
+title: "GPS Data Wrangling"
+author: "Joe Celebrezze"
+date: "2023-08-29"
+output: html_document
+---
+
+This may just be a temporary script, as I don't see us having to revisit it, but it is meant to add the GPS points (from Trimble) to our datasets
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+here = here::here
+
+source(here("scripts", "source_code.R"))
+source(here("scripts", "mem.selection.function.R"))
+
+group_by = dplyr::group_by
+
+## 2022 Data ##
+field.data.2022 <- read.csv(here('data', 'field_data', 'Plot_FieldData_AllFires.csv'))[,2:20]
+colnames(field.data.2022)[1] <- 'Plot'
+
+# GPS Data
+BC.pts <- read.csv(here('data', 'field_data', 'BC.csv'))
+HR.pts <- read.csv(here('data', 'field_data', 'HR.csv'))
+Tower.pts <- read.csv(here('data', 'field_data', 'Tower.csv'))
+mf.pts <- rbind(BC.pts, HR.pts, Tower.pts)
+
+## 2023 Data ##
+overview <- read.csv(here('data', 'field_data', 'field.data.overview.csv'))[1:80,1:12]
+colnames(overview)[1] <- 'Plot'
+
+# GPS Data
+nwcasc.2023.pts <- read.csv(here('data', 'field_data', 'NWCASC_Plots.csv'))
+```
+
+# Wrangling GPS Data
+```{r}
+mf.pts <- mf.pts %>% 
+  select(Datafile, Latitude, Longitude) %>% 
+  mutate(Datafile = gsub('.cor', '', Datafile)) %>% 
+  mutate(Datafile = gsub('NEW', '', Datafile)) %>% 
+  mutate(Datafile = gsub('BCRS2', 'BCS2', Datafile)) %>% 
+  rename(Plot = Datafile, Lat.N = Latitude, Long.N = Longitude)
+
+nwcasc.2023.pts <- nwcasc.2023.pts %>% 
+  select(Datafile, Latitude, Longitude) %>% 
+  mutate(Datafile = gsub('.cor', '', Datafile)) %>% 
+  mutate(Datafile = gsub('EG_6-3', 'EG-6-3', Datafile)) %>% 
+  rename(Plot = Datafile, Lat.N = Latitude, Long.N = Longitude)
+```
+
+# Combining w/ field data
+
+## 2022
+First, I have to add in the GPS coordinates that we did not change (School fire)
+```{r}
+school.pts <- field.data.2022 %>% 
+  filter(Fire == 'School') %>% 
+  select(Plot, Lat, Long) %>% 
+  rename(Lat.N = Lat, Long.N = Long)
+mf.pts <- rbind(school.pts, mf.pts)
+
+field.data.2022 <- merge(field.data.2022, mf.pts, by = 'Plot') %>% 
+  select(-Lat, -Long) %>% 
+  rename(Lat = Lat.N, Long = Long.N)
+```
+
+## 2023
+First, I have to fix overview, then add points to overview
+```{r}
+overview <- overview[1:80,]
+
+overview <- merge(overview, nwcasc.2023.pts, by = 'Plot')  %>% 
+  select(-Easting, -Northing) %>% 
+  rename(Lat = Lat.N, Long = Long.N)
+```
+
+# Rewriting CSV Files
+```{r}
+write.csv(field.data.2022, file = here('data', 'field_data', 'Plot_FieldData_AllFires.csv'))
+write.csv(overview, file = here('data', 'field_data', 'field.data.overview.csv'))
+```
+
