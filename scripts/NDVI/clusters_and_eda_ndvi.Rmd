@@ -1,0 +1,1161 @@
+---
+title: "NDVI Analysis: EDA, Top-down, and Bottom-up Cluster Analyses"
+author: "Joe Celebrezze"
+date: "2024-03-27"
+output: html_document
+---
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(here)
+here = here::here
+
+source(here("scripts", "source_code.R"))
+library(emmeans)
+
+# Blue Mtns. Raster
+blue.mtns.ras <- raster(here('data', 'blue_mtns_misc', 'bluemtnsras.tif'))
+# Postfire Regen. Data (Davis et al)
+postfire.regen <- raster(here('data', 'regen_prob', 'postfire_regen_prob.tif'))
+
+wide.df <- read.csv(here('data', 'processed_data', 'NDVI', 'wide.df.csv')) %>% 
+  select(-X)
+colnames(wide.df)[14:37] <- c(0:23)
+long.df <- read.csv(here('data', 'processed_data', 'NDVI', 'long.df.csv')) %>% 
+  select(-X)
+field.data.both <- read.csv(here('data', 'processed_data', 'NDVI', 'field.data.both.csv')) %>% 
+  select(-X)
+
+field.data.both %>% 
+  group_by(Fire) %>% 
+  tally()
+
+long.df.avg <- long.df %>% 
+  group_by(relative_year) %>% 
+  summarise(avg_ndvi = mean(ndvi), avg_delta_ndvi = mean(yearly_delta_ndvi))
+```
+
+# PCA (Basic)
+```{r}
+# Prepping Dataset
+traj.metrics.df.long <- long.df %>% 
+  filter(relative_year > 10) %>% 
+  select(x_y, fire, postdisturbance_ndvi, delta_ndvi, postfire_fitted_rsq, postfire_fitted_slope, auc_delta_ndvi)
+
+traj.metrics.df.wide <- wide.df %>% 
+  pivot_longer(cols = !c(x_y, Long, Lat, Plot, fire, predisturbance_ndvi, postdisturbance_ndvi, disturbance_ndvi, delta_ndvi, absolute_regrowth, relative_regrowth, max.postfire.ndvi, pct_recovery, time_to_0.8recovery, time_to_0.6recovery, dndvi, hli, canopy_cover, veg_height, cwd_present, cwd_future, TE_future, TE_present, elevation, postfire_ppt, postfire_tmax, postfire_tmin, postfire_vpdmax, postfire_vpdmin), names_to = 'relative_year', values_to = 'ndvi') %>% 
+  mutate(relative_year = as.numeric(relative_year)) %>% 
+  filter(relative_year > 10) %>% 
+  select(x_y, fire, absolute_regrowth, relative_regrowth, pct_recovery)
+
+traj.metrics.df <- merge(traj.metrics.df.long, traj.metrics.df.wide, by = c('x_y', 'fire')) %>% 
+  distinct(x_y, fire, .keep_all = T) %>% 
+  mutate(postfire_fitted_rsq = ifelse(is.na(postfire_fitted_rsq), 0, postfire_fitted_rsq)) %>% 
+  mutate(relative_regrowth = ifelse(is.nan(relative_regrowth), NA, relative_regrowth)) %>% 
+  drop_na(relative_regrowth)
+
+traj.pca <- traj.metrics.df %>% 
+  select(-x_y, -fire) %>% 
+  prcomp(scale = T)
+
+summary(traj.pca)
+traj.pca$rotation[,1:2]
+
+traj.cor <- traj.metrics.df %>% 
+  select(-x_y, -fire) %>% 
+  cor()
+
+corrplot(traj.cor, method = 'number', diag = F, type = 'lower')
+
+autoplot(traj.pca, data = traj.metrics.df,
+              loadings = TRUE, loadings.colour = 'black',
+              loadings.label = TRUE, loadings.label.size = 4.5) +
+  theme_bw() +
+  theme(axis.title = element_text(face = 'bold', size = 16))
+```
+traj.metrics.df, the dataframe tailored for the PCA is also going to be used in the k-means clustering analysis
+
+# NDVI Over Time (by fire)
+```{r}
+long.df %>% 
+  ggplot(aes(x = relative_year, y = yearly_delta_ndvi, color = fire)) +
+    geom_point(alpha = 0.3) +
+    geom_line(alpha = 0.1) +
+    geom_smooth(alpha = 0.5) +
+    geom_line(data = long.df.avg, aes(x = relative_year, y = avg_delta_ndvi), color = 'black', linewidth = 2) +
+    labs(x = 'Relative Year (Fire = 10)', y = 'NDVI (Pre-fire Mean-adjusted)', color = 'Fire') +
+    theme_bw()
+```
+
+# Top-Down Cluster Analysis
+**Using Trajectory Metrics**
+For this method, I am going to mirror the method used by Madeline when looking at the field data, but instead of inputting the field data values into the analysis, the trajectory metrics will be inputted and we'll get clusters for different 'modes' of post-fire recovery
+
+Prepping dataset
+```{r}
+# Only interested in the trajectory metrics
+traj.df <- traj.metrics.df %>% 
+  select(-x_y, -fire, -auc_delta_ndvi, -absolute_regrowth) # removing some metrics that are highly correlated
+
+# Scaling, centering all metrics
+traj.scaled.df <- as.data.frame(scale(traj.df))
+
+# Getting rid of outliers
+traj.scaled.df <- traj.scaled.df %>% 
+  filter(pct_recovery < 20, pct_recovery > -10, relative_regrowth < 10)
+traj.df <- traj.df %>% 
+  filter(pct_recovery < 30, pct_recovery > -6, relative_regrowth < 16)
+```
+
+The below chunks are from Madeline's code
+```{r}
+## 3 ways to determine optimal cluster 
+# 1. optimal cluster at the elbow
+factoextra::fviz_nbclust(traj.scaled.df, kmeans, method = "wss") # 2 clusters
+
+# 2. optimal cluster from gap statistic: high point!
+gap_stat <- clusGap(traj.scaled.df,
+                    FUN = kmeans,
+                    nstart = 25,
+                    K.max = 10,
+                    B = 50)
+# plot number of clusters vs. gap statistic
+fviz_gap_stat(gap_stat) # Not sure from this one... 6?
+
+# 3. silhouette analysis
+fviz_nbclust(traj.scaled.df, kmeans, method = "silhouette") # Looks like 2
+```
+
+```{r}
+#perform k-means clustering with k = 2 clusters
+km <- kmeans(traj.scaled.df, centers = 2) # Note I removed nstart = 33, what does this mean?; note: I also tried k = 5
+
+#view results
+km
+
+#plot results of final k-means model
+fviz_cluster(km, data = traj.scaled.df)
+
+#find unscaled (real-value) means of each cluster
+aggregate(traj.df, by=list(cluster=km$cluster), mean)
+
+#add cluster assigment to dataframes
+traj.scaled.df <- cbind(traj.scaled.df, cluster = km$cluster)
+traj.df <- cbind(traj.df, cluster = km$cluster)
+wide.cluster.df <- merge(traj.df, wide.df, by = c('postdisturbance_ndvi', 'delta_ndvi', 'relative_regrowth', 'pct_recovery'))
+```
+
+### Time Series (Points)
+```{r}
+# Lengthening dataframe, adding RdNDVI, scaled recovery metric, and delta NDVI (deviation from prefire conditions)
+long.cluster.df <- wide.cluster.df %>% 
+  pivot_longer(cols = !c(x_y, Long, Lat, Plot, fire, predisturbance_ndvi, postdisturbance_ndvi, disturbance_ndvi, delta_ndvi, absolute_regrowth, relative_regrowth, postfire_fitted_rsq, postfire_fitted_slope, max.postfire.ndvi, pct_recovery, time_to_0.8recovery, time_to_0.6recovery, dndvi, cluster, hli, canopy_cover, veg_height, cwd_present, cwd_future, TE_future, TE_present, elevation, postfire_ppt, postfire_tmax, postfire_tmin, postfire_vpdmax, postfire_vpdmin), names_to = 'relative_year', values_to = 'ndvi') %>% 
+  mutate(yearly_delta_ndvi = ndvi - predisturbance_ndvi) %>% 
+  mutate(scaled_recovery_metric = (ndvi - disturbance_ndvi)/(predisturbance_ndvi - disturbance_ndvi)) %>% 
+  mutate(RdNDVI = (predisturbance_ndvi - ndvi)/(sqrt(abs(predisturbance_ndvi/1000)))) %>% 
+  mutate(cluster = as.factor(cluster)) %>% 
+  mutate(relative_year = as.numeric(relative_year))
+
+# Average values
+long.cluster.avg.df <- long.cluster.df %>% 
+  group_by(cluster, relative_year) %>% 
+    mutate(cluster = case_when(
+    cluster == 2 ~ 'Fast recovery',
+    cluster == 1 ~ 'Slow recovery'
+  )) %>% 
+  summarise(avg_ndvi = mean(ndvi), avg_delta_ndvi = mean(yearly_delta_ndvi), avg_srm = mean(scaled_recovery_metric), avg_RdNDVI = mean(RdNDVI)) %>% 
+  drop_na(relative_year)
+```
+
+### Time Series (Boxplots)
+```{r}
+significance <- c(' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                  ' ', ' ', ' ', ' ', ' ', ' ', '*',
+                  '*', '*', '*', '*', '*', '*', '*',
+                  '*', '*', '*', '*')
+relative_year <- c(0:24)
+y <- c(0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, -20,
+       10, 65, 120, 180, 210, 240, 260,
+       280, 300, 320, 340)
+y.alt <- c(0, 0, 0, 0, 0, 0, 0,
+           0, 0, 0, 0, 0, 0, -120,
+           -60, 0, 20, 30, 40, 50, 60,
+           70, 80, 85, 90)
+divergence.df.TD <- as.data.frame(relative_year, significance, y, y.alt)
+                
+timeseries_boxplots <- long.cluster.df %>% 
+    mutate(cluster = case_when(
+    cluster == 2 ~ 'Fast recovery',
+    cluster == 1 ~ 'Slow recovery'
+  )) %>% 
+  drop_na(relative_year) %>% 
+  ggplot() +
+    geom_boxplot(aes(x = as.factor(relative_year), y = yearly_delta_ndvi, color = cluster), alpha = 0.2, outlier.shape = NA) +
+    geom_line(data = long.cluster.avg.df, aes(x = relative_year+1, y = avg_delta_ndvi, color = cluster), alpha = 0.9, linewidth = 2.3) +
+    #geom_segment(aes(x = 10.5, y = 410, xend = 10.5, yend = 0),
+     #            arrow = arrow(length = unit(0.1, "cm")),
+      #           lineend = 'square', linejoin = 'mitre',
+       #          linewidth = 1.3, color = 'black') +
+    geom_vline(xintercept = 10.5, linetype = 'dashed', linewidth = 0.4) +
+    scale_y_continuous(breaks = c(-900, -600, -300, 0, 300)) +
+    scale_x_discrete(labels = c('', '', '', '', '-5', '', '', '', '', '0', '', '', '', '', '5', '', '', '', '', '10', '', '', '', '')) +
+    geom_text(aes(x = relative_year + 0.025, y = y.alt, label = significance),
+              data = divergence.df.TD, size = 12, fontface = 'bold') +
+    annotate(geom = 'text', x = 10.1, y = -700, label = 'Fire', size = 12, angle = 90) +
+    annotate(geom = 'text', x = 1, y = 300, label = 'a', size = 24, fontface = 'bold') +
+    labs(x = 'Years post-fire', y = 'NDVI (baseline-adjusted)', color = 'Cluster') +
+    scale_color_manual(values = c('black', 'gray70')) +
+    theme_bw() +
+    theme(text = element_text(family = 'Arial'),
+          legend.position = c(0.85, 0.12),
+          axis.title = element_text(face = 'bold', size = 38),
+          axis.text = element_text(size = 30),
+          legend.title = element_blank(),
+          axis.ticks = element_blank(),
+          legend.text = element_text(size = 38),
+          panel.grid.major.x = element_blank())
+timeseries_boxplots
+ggsave(here('figures', 'extra_figures', 'change.in.ndvi.time.series.boxplots.png'), height = 9, width = 14)
+```
+
+## ANOVAs/Boxplots
+### When do clusters diverge?
+#### RANOVA
+```{r}
+# Option 1
+diverge.df <- long.cluster.df %>% 
+  filter(relative_year > 9)
+
+diverge.mod <- lmer(ndvi ~ relative_year*cluster + (1|fire), data = diverge.df)
+summary(diverge.mod)
+
+# Option 2
+for(i in 9:23) {
+  df <- long.cluster.df %>% 
+    filter(relative_year == i)
+  mod <- lmer(yearly_delta_ndvi ~ cluster + (1|fire), df)
+  print(i)
+  print(summary(mod))
+}
+```
+
+### Differences in Fire
+```{r}
+# Differences in fire
+fire.lm <- lm(cluster ~ fire, data = wide.cluster.df)
+anova(fire.lm)
+fire.aov <- aov(fire.lm)
+TukeyHSD(fire.aov)
+anova_labels <- data.frame(fire=c(1:8), label=c('a', 'a', 'ab', 'ab', 'ab', 'ab', 'ab', 'b'))
+
+wide.cluster.df %>% 
+ mutate(fire=factor(fire)) %>% 
+ mutate(fire = case_when(
+   fire == "Easy" ~ "Easy",
+   fire == "HR" ~ "Hash \nRock",
+   fire == "School" ~ "School",
+   fire == "Wheeler" ~ "Wheeler \nPoint",
+   fire == "Flagtail" ~ "Flagtail",
+   fire == "Calamity" ~ "Calamity \nComplex",
+   fire == "BC" ~ "Bridge \nCreek",
+   fire == "Egley" ~ "Egley \nComplex"
+ )) %>% 
+ mutate(cluster = case_when(
+   cluster == 1 ~ "Fast \nRecovery",
+   cluster == 2 ~ "Slow \nRecovery")) %>%  
+ mutate(fire=fct_relevel(fire,c("Easy", "Hash \nRock", "School", "Wheeler \nPoint", "Flagtail", 
+                                "Calamity \nComplex", "Bridge \nCreek", "Egley \nComplex"))) %>%
+ ggplot(aes(x = fire, y = cluster)) +
+  geom_jitter(height = 0.3, alpha = 0.6) +
+  #scale_y_continuous(breaks = c(1, 2)) +
+  labs(x = 'Fire', y = 'Spectral Trajectory Cluster') +
+  geom_text(aes(x = fire, y = 1.5, label = label), data = anova_labels, fontface = 'italic', size = 5) +
+  theme_bw() +
+  theme(axis.title = element_blank(),
+        #axis.title = element_text(face = 'bold', size = 16),
+        axis.text.x = element_text(size = 15, face = 'bold'),
+        axis.text.y = element_text(size = 15, face = 'bold', angle = 90, hjust = 0.5),
+        axis.ticks = element_blank())
+#ggsave(here('figures', 'extra_figures', 'fire.vs.cluster.png'), height = 5, width = 9.5)
+
+diff.by.fire <- wide.cluster.df %>% 
+  group_by(fire, cluster) %>% 
+  tally() %>% 
+  pivot_wider(names_from = cluster, values_from = n) %>% 
+  mutate(cluster_ratio = `1`/`2`)
+diff.by.fire %>% 
+  ungroup() %>% 
+  summarise(one = sum(`1`), two = sum(`2`))
+```
+
+### Climate and Topography Normals
+#### Data Wrangling
+```{r}
+# PRISM 30yr normals, 800m resolution
+precip.ras <- raster(here('data', 'climate', 'precip_30yr_normal', 'PRISM_ppt_30yr.asc'))
+tmean.ras <- raster(here('data', 'climate', 'tmean_30yr_normal', 'PRISM_tmean_30yr.asc'))
+vpdmax.ras <- raster(here('data', 'climate', 'vpdmax_30yr_normal', 'PRISM_vpdmax_30yr.asc'))
+# Current CRS: +proj=longlat +datum=NAD83 +no_defs; needs to be changed to +proj=longlat +datum=WGS84 +no_defs
+precip.ras <- projectRaster(from = precip.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
+tmean.ras <- projectRaster(from = tmean.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
+vpdmax.ras <- projectRaster(from = vpdmax.ras, to = blue.mtns.ras, crs = crs(postfire.regen))
+
+# Extract Climate Variables from Rasters to add to wide.cluster.df
+wide_cluster_coords <- wide.cluster.df[,c(9,10)] # define coordinates
+wide_cluster_pts <- wide.cluster.df %>% 
+  select(Long, Lat) %>% 
+  SpatialPointsDataFrame(coords = wide_cluster_coords, proj4string = crs(postfire.regen)) # transform to spatial points dataframe
+## Precip ##
+precip_vals <- as.data.frame(extract(precip.ras, wide_cluster_pts))
+colnames(precip_vals)[1] <- 'precip' # renaming column
+## Mean Temp ##
+tmean_vals <- as.data.frame(extract(tmean.ras, wide_cluster_pts))
+colnames(tmean_vals)[1] <- 'tmean' # renaming column
+## Max VPD ##
+vpdmax_vals <- as.data.frame(extract(vpdmax.ras, wide_cluster_pts))
+colnames(vpdmax_vals)[1] <- 'vpdmax' # renaming column
+
+## Postfire Regen Probability ##
+regen_vals <- as.data.frame(extract(postfire.regen, wide_cluster_pts))
+colnames(regen_vals)[1] <- 're-0gen_prob' # renaming column
+
+# Combining with wide.cluster.df
+climate_vals <- cbind(wide_cluster_coords, precip_vals, tmean_vals, vpdmax_vals, regen_vals)
+wide.cluster.df <- merge(wide.cluster.df, climate_vals, by = c('Long', 'Lat')) %>% 
+    distinct(x_y, .keep_all = T) # removing duplicates
+
+#write.csv(wide.cluster.df, here('data', 'processed_data', 'clusters.and.climate.normals.csv'))
+```
+
+#### Stats Tests
+Precip
+```{r}
+# Normal distribution?
+precip.lm <- lm(data = wide.cluster.df, precip ~ cluster)
+plot(precip.lm) # CLT applies, but qqplot looks kind funky
+# Equal variances?
+var.test(data = wide.cluster.df, precip ~ cluster) # No, variances not equal
+# T-test
+c1 <- wide.cluster.df %>% 
+  filter(cluster == 1) %>% 
+  select(precip)
+c2 <- wide.cluster.df %>% 
+  filter(cluster == 2) %>% 
+  select(precip)
+t.test(c1, c2, var.equal = F) # significant differences
+```
+
+Mean Temp.
+```{r}
+# Normal distribution?
+tmean.lm <- lm(data = wide.cluster.df, tmean ~ cluster)
+plot(tmean.lm) # CLT applies, but qqplot looks kind funky (basically looks the same as precip)
+# Equal variances?
+var.test(data = wide.cluster.df, tmean ~ cluster) # No, variances not equal
+# T-test
+c1 <- wide.cluster.df %>% 
+  filter(cluster == 1) %>% 
+  select(tmean)
+c2 <- wide.cluster.df %>% 
+  filter(cluster == 2) %>% 
+  select(tmean)
+t.test(c1, c2, var.equal = F) # n.s.
+```
+
+Max VPD
+```{r}
+# Normal distribution?
+vpdmax.lm <- lm(data = wide.cluster.df, vpdmax ~ cluster)
+plot(vpdmax.lm)
+# Equal variances?
+var.test(data = wide.cluster.df, vpdmax ~ cluster) # No, variances not equal
+# T-test
+c1 <- wide.cluster.df %>% 
+  filter(cluster == 1) %>% 
+  select(vpdmax)
+c2 <- wide.cluster.df %>% 
+  filter(cluster == 2) %>% 
+  select(vpdmax)
+t.test(c1, c2, var.equal = F) # significant differences
+```
+
+CHILI
+```{r}
+# Normal distribution?
+chili.lm <- lm(data = wide.cluster.df, hli ~ cluster)
+plot(chili.lm) # more of a uniform distribution; CLT still applies
+# Equal variances?
+var.test(data = wide.cluster.df, hli ~ cluster) # No, variances not equal
+# T-test
+c1 <- wide.cluster.df %>% 
+  filter(cluster == 1) %>% 
+  select(hli)
+c2 <- wide.cluster.df %>% 
+  filter(cluster == 2) %>% 
+  select(hli)
+t.test(c1, c2, var.equal = F) #n.s.
+```
+
+#### Boxplots
+```{r}
+wide.cluster.df %>% 
+  mutate(cluster = as.factor(cluster)) %>% 
+  pivot_longer(cols = c(precip, tmean, vpdmax, hli), names_to = 'climate_var', values_to = 'climate_val') %>% 
+  ggplot(aes(x = cluster, y = climate_val, color = cluster)) +
+    geom_boxplot(outlier.shape = NA, size = 0.8) +
+    geom_jitter(width = 0.25, alpha = 0.05) +
+    labs(x = 'Spectral Trajectory Cluster') +
+    facet_wrap(~climate_var, scales = 'free', labeller = as_labeller(climate_var_names), ncol = 4) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 16),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+#ggsave(here('figures', 'extra_figures', 'climate.vs.cluster.boxplots.png'), height = 7, width = 15)
+```
+
+
+### Clusters vs. Field Data
+Getting Combined Dataset Ready
+```{r}
+field.data.both <- field.data.both %>% 
+  drop_na(Long)
+
+main.df <- merge(wide.cluster.df, field.data.both, by = 'Plot') %>% 
+  select(-Long.y, -Lat.y, -Fire) %>% 
+  rename(Long = Long.x, Lat = Lat.x) %>% 
+  mutate(aspect = as.numeric(aspect),
+         cluster = as.factor(cluster),
+         log.seedling.density = log(seedling.density),
+         log.regen.density = log(regen.density)) %>% 
+  mutate(log.seedling.density = ifelse(log.seedling.density < 0, 0, log.seedling.density),
+         log.regen.density = ifelse(log.regen.density < 0, 0, log.regen.density)) %>%  # making any -Inf values for log.seedling.density and log.regen.density = 0
+  distinct() # omitting duplicate values
+
+main.df %>% 
+  group_by(cluster) %>% 
+  tally()
+```
+
+#### Stats Tests
+
+##### RANOVA
+```{r}
+summary(lmer(dndvi ~ cluster + (1|fire), main.df)) # p = 0.0839
+summary(lmer(postfire_fitted_slope ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(delta_ndvi ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(pct_recovery ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(relative_regrowth ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(densiometer ~ cluster + (1|fire), main.df)) # n.s.
+summary(lmer(regen.density ~ cluster + (1|fire), main.df)) # n.s.
+summary(lmer(seedling.pct ~ cluster + (1|fire), main.df)) # n.s.
+summary(lmer(shrub.pct ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(grass.pct ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(herb.pct ~ cluster + (1|fire), main.df)) # n.s.
+summary(lmer(slope ~ cluster + (1|fire), main.df)) # sig.
+summary(lmer(elevation ~ cluster + (1|fire), main.df)) # sig.
+```
+
+##### T-test
+Looking at two clusters, t-test
+
+% Grass
+```{r}
+# Normal distribution?
+grass.lm <- lm(data = main.df, grass.pct ~ cluster)
+plot(grass.lm)
+# Equal variances?
+var.test(data = main.df, grass.pct ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(grass.pct)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(grass.pct)
+t.test(c1, c2, var.equal = T) # significant
+```
+
+% herb
+```{r}
+# Normal distribution?
+herb.lm <- lm(data = main.df, herb.pct ~ cluster)
+plot(herb.lm)
+# Equal variances?
+var.test(data = main.df, herb.pct ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(herb.pct)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(herb.pct)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+**Significant difference**
+
+% shrub
+```{r}
+# Normal distribution?
+shrub.lm <- lm(data = main.df, shrub.pct ~ cluster)
+plot(shrub.lm)
+# Equal variances?
+var.test(data = main.df, shrub.pct ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(shrub.pct)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(shrub.pct)
+t.test(c1, c2, var.equal = T) # significant
+```
+**Significant difference**
+
+% seedling
+```{r}
+# Normal distribution?
+seedling.lm <- lm(data = main.df, seedling.pct ~ cluster)
+plot(seedling.lm) # NOT A NORMAL DISTRIBUTION, but hopefully central limit theorem applies (n > 30 for each group)
+# Equal variances?
+var.test(data = main.df, seedling.pct ~ cluster) # NO! Indicate in t.test below
+# T-test (Welch's)
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(seedling.pct)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(seedling.pct)
+t.test(c1, c2, var.equal = F) # significant
+```
+
+% green
+```{r}
+# Normal distribution?
+green.lm <- lm(data = main.df, green.pct ~ cluster)
+plot(green.lm)
+# Equal variances?
+var.test(data = main.df, green.pct ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(green.pct)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(green.pct)
+t.test(c1, c2, var.equal = T) # significant
+```
+**significant differences**
+
+% npv
+```{r}
+# Normal distribution?
+npv.lm <- lm(data = main.df, npv.pct ~ cluster)
+plot(npv.lm)
+# Equal variances?
+var.test(data = main.df, npv.pct ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(npv.pct)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(npv.pct)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+
+Log Seedling Density
+```{r}
+# Normal distribution?
+log.seedling.lm <- lm(data = main.df, log.seedling.density ~ cluster)
+plot(log.seedling.lm)
+# Equal variances?
+var.test(data = main.df, log.seedling.density ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(log.seedling.density)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(log.seedling.density)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+
+Log Regen Density
+```{r}
+# Normal distribution?
+log.regen.lm <- lm(data = main.df, log.regen.density ~ cluster)
+plot(log.regen.lm)
+# Equal variances?
+var.test(data = main.df, log.regen.density ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(log.regen.density)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(log.regen.density)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+
+Slope
+```{r}
+# Normal distribution?
+slope.lm <- lm(data = main.df, slope ~ cluster)
+plot(slope.lm)
+# Equal variances?
+var.test(data = main.df, slope ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(slope)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(slope)
+t.test(c1, c2, var.equal = T) # significant
+```
+
+Aspect
+```{r}
+# Normal distribution?
+aspect.lm <- lm(data = main.df, aspect ~ cluster)
+plot(aspect.lm) # Doesn't look great, but hopefully CLT applies
+# Equal variances?
+var.test(data = main.df, aspect ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(aspect)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(aspect)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+**significant differences**
+
+Densiometer
+```{r}
+# Normal distribution?
+densio.lm <- lm(data = main.df, densiometer ~ cluster)
+plot(densio.lm)
+# Equal variances?
+var.test(data = main.df, densiometer ~ cluster)
+# T-test
+c1 <- main.df %>% 
+  filter(cluster == 1) %>% 
+  select(densiometer)
+c2 <- main.df %>% 
+  filter(cluster == 2) %>% 
+  select(densiometer)
+t.test(c1, c2, var.equal = T) # n.s.
+```
+**significant differences**
+
+#### Boxplots
+##### Wrangling
+```{r}
+# T-test Results
+cluster <- c(rep(c('Fast \nrecovery', 'Slow \nrecovery'), 8))
+cluster.no <- c(rep(c(0.6, 2), 8))
+var <- c(rep('delta_ndvi', 2), rep('pct_recovery', 2),
+               rep('postfire_fitted_slope', 2), rep('relative_regrowth', 2),
+               rep('regen.density', 2), rep('seedling.pct', 2),
+               rep('shrub.pct', 2), rep('grass.pct', 2))
+y.val <- c(rep(-10, 2), rep(1.25, 2),
+           rep(32, 2), rep(3.3, 2), 
+           rep(9, 2), rep(64, 2),
+           rep(85, 2), rep(70, 2))
+panel.y.val <- c(rep(50, 2), rep(1.37, 2),
+           rep(36, 2), rep(5.65, 2), 
+           rep(18500, 2), rep(66, 2),
+           rep(88, 2), rep(85, 2))
+label <- c('*', '', '*', '', '*', '', '*', '', '', '', '', '', '*', '', '', '*')
+panel.label <- c('b', '', 'c', '', 'd', '', 'e', '', 'f', '', 'g', '', 'h', '', 'i', '')
+t.long.cluster.df <- data.frame(cluster, cluster.no, var, y.val, label, panel.y.val, panel.label) 
+
+df <- main.df %>% 
+  mutate(cluster = case_when(
+    cluster == 2 ~ 'Fast \nrecovery',
+    cluster == 1 ~ 'Slow \nrecovery'
+  )) %>% 
+  pivot_longer(cols = c(pct_recovery, postfire_fitted_slope, relative_regrowth, delta_ndvi, regen.density, seedling.pct, shrub.pct, grass.pct), values_to = 'val', names_to = 'var')
+```
+
+##### Linear Y-Axis
+```{r}
+vars <- c('delta_ndvi', 'pct_recovery', 'postfire_fitted_slope',
+                       'relative_regrowth', 'seedling.pct', 
+                       'shrub.pct', 'grass.pct')
+
+plot_list <- list()
+
+for(i in 1:length(vars)){
+text.df <- t.long.cluster.df %>% 
+  filter(var == vars[i])
+
+plot <- df %>% 
+  filter(var == vars[i]) %>% 
+  ggplot(aes(x = cluster, y = val, color = cluster)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.1, height = 0, alpha = 0.1) +
+    geom_text(aes(x = cluster, y = y.val, label = label),
+              color = 'black', size = 14, fontface = 'bold',
+              data = text.df)  +
+    geom_text(aes(x = cluster.no, y = panel.y.val, label = panel.label),
+              color = 'black', size = 18, fontface = 'bold',
+              data = text.df)  +
+    scale_color_manual(values = c('black', 'gray70')) +
+    labs(x = 'Spectral recovery cluster', y = ' ') +
+    facet_wrap(~var, scales = 'free',
+               labeller = as_labeller(NDVIspectral_field_var_names),
+               strip.position = 'left') +
+    theme_bw() +
+    theme(text = element_text(family = 'Arial'),
+          legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text.x = element_text(face = 'bold', size = 22),
+          axis.text.y = element_text(size = 18),
+          strip.text = element_text(face = 'bold', size = 24),
+          strip.background = element_blank(),
+          strip.placement = 'outside',
+          panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank())
+plot_list[[i]] <- plot
+}
+```
+
+##### Log-Transformed Y-Axis
+```{r}
+text.df <- t.long.cluster.df %>% 
+  filter(var == 'regen.density')
+
+plot <- df %>% 
+  filter(var == 'regen.density') %>% 
+  ggplot(aes(x = cluster, y = val, color = cluster)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.1, height = 0, alpha = 0.1) +
+    geom_text(aes(x = cluster, y = y.val, label = label),
+              color = 'black', size = 14, fontface = 'bold',
+              data = text.df)  +
+    geom_text(aes(x = cluster.no, y = panel.y.val, label = panel.label),
+              color = 'black', size = 18, fontface = 'bold',
+              data = text.df)  +
+    scale_color_manual(values = c('black', 'gray70')) +
+    labs(x = 'Spectral recovery cluster', y = ' ') +
+    facet_wrap(~var, scales = 'free',
+               labeller = as_labeller(NDVIspectral_field_var_names),
+               strip.position = 'left') +
+    scale_y_continuous(trans = 'log', breaks = c(50, 1000, 20000)) +
+    theme_bw() +
+    theme(text = element_text(family = 'Arial'),
+          legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text.x = element_text(face = 'bold', size = 22),
+          axis.text.y = element_text(size = 18),
+          strip.text = element_text(face = 'bold', size = 24),
+          strip.background = element_blank(),
+          strip.placement = 'outside',
+          panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank())
+plot_list[[8]] <- plot
+
+#rm(df, plot, text.df)
+```
+
+##### Arranged
+```{r, warning=FALSE}
+spectral_boxplots <- cowplot::plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]],
+                                        plot_list[[4]], plot_list[[8]], plot_list[[5]],
+                                        plot_list[[6]], plot_list[[7]], ncol = 4)
+spectral_boxplots
+
+rm(plot_list)
+```
+
+Looking at spectral trajectory cluster vs. field data
+```{r}
+main.df %>% 
+  pivot_longer(cols = c(grass.pct, herb.pct, shrub.pct, seedling.pct, green.pct, npv.pct, log.seedling.density, log.regen.density, densiometer), values_to = 'field_val', names_to = 'field_var')  %>% 
+  ggplot(aes(x = cluster, y = field_val, color = cluster)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    labs(x = 'Spectral Trajectory Cluster') +
+    facet_wrap(~field_var, scales = 'free', labeller = as_labeller(field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title.y = element_blank(),
+          axis.title.x = element_text(face = 'bold', size = 16),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 12),
+          strip.text = element_text(face = 'bold', size = 12))
+#ggsave(here('figures', 'extra_figures', 'field.vs.clusters.boxplots.png'), height = 8, width = 9)
+```
+
+Canopy cover, % shrub, % green, % herb and aspect show a significant difference between clusters; however, I think the patterns we observed in the field could be somewhat hidden, as there were distinct differences observed in the 'trailing edge' vs. the 'forested' sites
+
+## Top-Down Figure (Arranged)
+```{r, warning = FALSE}
+topdown1 <- cowplot::plot_grid(timeseries_boxplots, spectral_boxplots, rel_heights = c(11, 9), ncol = 1)
+topdown1
+ggsave(here('figures', 'supp_figures', 'NDVI.top.down.figure.png'), width = 22, height = 24)
+```
+
+# -------------------
+# Bottom-Up Cluster Analysis
+
+## K-Means Cluster Analysis
+**Using Field Data**
+
+Prepping dataset
+```{r}
+# Only interested in the field data metrics
+field.df <- main.df %>% 
+  select(grass.pct, herb.pct, shrub.pct, seedling.pct, green.pct, npv.pct, log.regen.density, densiometer) %>%  # trying log regen density rather than log seedling density
+  drop_na(seedling.pct)
+
+field.df <- main.df %>% 
+  select(grass.pct, shrub.pct, seedling.pct, log.regen.density) %>%  # trying log regen density rather than log seedling density
+  drop_na(log.regen.density)
+
+# Scaling, centering all metrics
+field.scaled.df <- as.data.frame(scale(field.df))
+```
+
+The below chunks are from Madeline's code
+```{r}
+## 3 ways to determine optimal cluster 
+# 1. optimal cluster at the elbow
+fviz_nbclust(field.scaled.df, kmeans, method = "wss") # 2, 4 or 7 clusters
+
+# 2. optimal cluster from gap statistic: high point!
+gap_stat <- clusGap(field.scaled.df,
+                    FUN = kmeans,
+                    nstart = 25,
+                    K.max = 10,
+                    B = 50)
+# plot number of clusters vs. gap statistic
+fviz_gap_stat(gap_stat) # Unclear
+
+# 3. silhouette analysis
+fviz_nbclust(field.scaled.df, kmeans, method = "silhouette") # Looks like 3
+```
+
+```{r}
+#perform k-means clustering with k = 3 clusters
+km <- kmeans(field.scaled.df, centers = 3) # Note I removed nstart = 33, what does this mean?; note: I also tried k = 5
+
+#view results
+km
+
+#plot results of final k-means model
+fviz_cluster(km, data = field.scaled.df)
+
+#find unscaled (real-value) means of each cluster
+aggregate(field.df, by=list(cluster=km$cluster), mean)
+
+#add cluster assigment to dataframes
+field.scaled.df <- cbind(field.scaled.df, cluster = km$cluster)
+field.df <- cbind(field.df, field.cluster = km$cluster)
+field.cluster.df <- merge(field.df, main.df, by = c('grass.pct', 'shrub.pct', 'log.regen.density', 'seedling.pct')) %>% 
+  distinct(Plot, .keep_all = T) #%>% # removing duplicates
+  #rename(green.pct = green.pct.x, npv.pct = npv.pct.x) %>% 
+  #select(-green.pct.y, -npv.pct.y)
+```
+
+## Visualizations
+```{r}
+# Lengthening dataframe, adding RdNDVI, scaled recovery metric, and delta NDVI (deviation from prefire conditions)
+long.field.cluster.df <- field.cluster.df %>% 
+  pivot_longer(cols = c(`0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`,
+                        `11`, `12`, `13`, `14`, `15`, `16`, `17`, `18`, `19`, `20`,
+                        `21`, `22`, `23`), names_to = 'relative_year', values_to = 'ndvi') %>% 
+  mutate(yearly_delta_ndvi = ndvi - predisturbance_ndvi) %>% 
+  mutate(scaled_recovery_metric = (ndvi - disturbance_ndvi)/(predisturbance_ndvi - disturbance_ndvi)) %>% 
+  mutate(RdNDVI = (predisturbance_ndvi - ndvi)/(sqrt(abs(predisturbance_ndvi/1000)))) %>% 
+  mutate(field.cluster = as.factor(field.cluster)) %>% 
+  mutate(relative_year = as.numeric(relative_year))
+# Average values
+long.field.cluster.avg.df <- long.field.cluster.df %>%
+  mutate(field.cluster = case_when(field.cluster == 1 ~ 'Shrub-dominated',
+                                   field.cluster == 2 ~ 'Tree-dominated',
+                                   field.cluster == 3 ~ 'Grass-dominated')) %>% 
+  group_by(field.cluster, relative_year) %>% 
+  summarise(avg_ndvi = mean(ndvi), avg_delta_ndvi = mean(yearly_delta_ndvi), avg_srm = mean(scaled_recovery_metric), avg_RdNDVI = mean(RdNDVI))
+
+# Number of sites per cluster
+field.cluster.df %>% 
+  group_by(field.cluster) %>% 
+  tally()
+```
+
+### Main Time Series
+```{r}
+significance <- c(' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                  ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+                  's', 's', 's', 's', 's', 's', 's',
+                  'st', 'st', 'st', 'st')
+relative_year <- c(0:24)
+y <- c(0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, -20,
+       0, 40, 65, 90, 115, 140, 155,
+       160, 160, 160, 160)
+divergence.df.BU <- as.data.frame(relative_year, significance, y)
+
+field.cluster.df %>% 
+  group_by(field.cluster) %>% 
+  tally()
+
+field.cluster.time.series <- long.field.cluster.df %>% 
+  mutate(field.cluster = case_when(field.cluster == 1 ~ 'Shrub-dominated',
+                                   field.cluster == 2 ~ 'Tree-dominated',
+                                   field.cluster == 3 ~ 'Grass-dominated')) %>% 
+  drop_na(relative_year) %>% 
+  ggplot() +
+    geom_boxplot(aes(x = as.factor(relative_year), y = yearly_delta_ndvi, color = field.cluster), alpha = 0.2, outlier.shape = NA) +
+    geom_line(data = long.field.cluster.avg.df, aes(x = relative_year+1, y = avg_delta_ndvi, color = field.cluster), alpha = 0.9, linewidth = 2.3) +
+    geom_vline(xintercept = 10.5, linetype = 'dashed', linewidth = 0.4) +
+    geom_text(aes(x = relative_year + 0.025, y = y, label = significance),
+              data = divergence.df.BU, size = 8.5, fontface = 'bold') +
+    scale_x_discrete(labels = c('', '', '', '', '-5', '', '', '', '', '0', '', '', '', '', '5', '', '', '', '', '10', '', '', '', '')) +
+    scale_y_continuous(breaks = c(-900, -600, -300, 0, 300)) +
+    annotate(geom = 'text', x = 10.1, y = -700, label = 'Fire', size = 12, angle = 90) +
+    annotate(geom = 'text', x = 1, y = 300, label = 'a', size = 24, fontface = 'bold') +
+    labs(x = 'Years post-fire', y = 'NDVI (baseline-adjusted)', color = 'Cluster') +
+    scale_color_manual(values = c('#DDC49B', '#002F00', '#08A045')) +
+    theme_bw() +
+    theme(text = element_text(family = 'Arial'),
+          legend.position = c(0.85, 0.12),
+          axis.title.x = element_text(face = 'bold', size = 38),
+          axis.title.y = element_text(margin = margin(r = 20), face = 'bold', size = 38),
+          axis.text = element_text(size = 30),
+          legend.title = element_blank(),
+          axis.ticks = element_blank(),
+          legend.text = element_text(size = 38),
+          panel.grid.major.x = element_blank(),
+          panel.grid.minor = element_blank())
+field.cluster.time.series
+ggsave(here('figures', 'extra_figures', 'field.cluster.ndvi.time.series.boxplots.png'), height = 9, width = 14)
+```
+
+### Boxplots
+#### Exploratory
+Looking at field data cluster vs. field data
+```{r}
+field.cluster.df %>% 
+  mutate(field.cluster = case_when(field.cluster == 1 ~ 'Shrub\ndominated',
+                                   field.cluster == 2 ~ 'Tree\ndominated',
+                                   field.cluster == 3 ~ 'Grass\ndominated')) %>% 
+  pivot_longer(cols = c(grass.pct, herb.pct, shrub.pct, seedling.pct, green.pct, npv.pct, log.regen.density, densiometer, log.seedling.density), values_to = 'field_val', names_to = 'field_var')  %>% 
+  ggplot(aes(x = field.cluster, y = field_val, color = field.cluster)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    scale_color_manual(values = c('#DDC49B', '#002F00', '#08A045')) +
+    labs(x = 'Field data cluster', y = ' ') +
+    facet_wrap(~field_var, scales = 'free', labeller = as_labeller(field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text.x = element_text(face = 'bold', size = 14),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 14))
+#ggsave(here('figures', 'extra_figures', 'field.cluster.field.boxplots.png'), height = 10, width = 12)
+```
+
+vs. Spectral Metrics
+```{r}
+field.cluster.df %>% 
+  mutate(field.cluster = case_when(field.cluster == 1 ~ 'Shrub\ndominated',
+                                   field.cluster == 2 ~ 'Tree\ndominated',
+                                   field.cluster == 3 ~ 'Grass\ndominated')) %>% 
+  pivot_longer(cols = c(postfire_fitted_slope, relative_regrowth, delta_ndvi, pct_recovery), values_to = 'spectral_val', names_to = 'spectral_var')  %>% 
+  ggplot(aes(x = field.cluster, y = spectral_val, color = field.cluster)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    scale_color_manual(values = c('tan', 'darkgreen', 'forestgreen')) +
+    labs(x = 'Field data cluster', y = ' ') +
+    facet_wrap(~spectral_var, scales = 'free', labeller = as_labeller(NDVIspectral_field_var_names)) +
+    theme_bw() +
+    theme(legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text.x = element_text(face = 'bold', size = 14),
+          axis.text.y = element_text(size = 14),
+          strip.text = element_text(face = 'bold', size = 14))
+#ggsave(here('figures', 'extra_figures', 'field.cluster.spectral.boxplots.png'), height = 8, width = 9)
+```
+
+#### Main
+##### Wrangling
+```{r}
+# Tukey-Kramer Results
+field.cluster <- c(rep(c(3, 1, 2), 8))
+cluster.no <- c(rep(c(0.6, 1, 1), 8))
+var <- c(rep('grass.pct', 3), rep('shrub.pct', 3),
+               rep('seedling.pct', 3), rep('regen.density', 3),
+               rep('delta_ndvi', 3), rep('pct_recovery', 3),
+               rep('postfire_fitted_slope', 3), rep('relative_regrowth', 3))
+y.val <- c(85, 43, 32, 42, 90, 56,
+           10, 14, 58, 1500, 1500, 18500, 
+          -125, -20, -50, 1, 1.3, 1.3,
+          25, 33, 36, 1.1, 3, 3)
+label <- c('b', 'a', 'a', 'a', 'b', 'a', 'a', 'a', 'b', 'a', 'a', 'b',
+           'a', 'b', 'b', 'a', 'b', 'b', 'a', 'b', 'b', 'a', 'b', 'ab')
+panel.y.val <- c(rep(85, 3), rep(88, 3),
+           rep(66, 3), rep(18500, 3), 
+           rep(50, 3), rep(1.365, 3),
+           rep(36, 3), rep(5.7, 3))
+panel.label <- c('i', '', '', 'h', '', '', 'g', '', '', 'f', '', '', 'b', '', '', 'c', '', '', 'd', '', '', 'e', '', '')
+tk.field.cluster.df <- data.frame(field.cluster, cluster.no, var, y.val, label, panel.y.val, panel.label) %>%     
+  mutate(field.cluster = case_when(field.cluster == 1 ~ 'Shrub\ndominated',
+                                   field.cluster == 2 ~ 'Tree\ndominated',
+                                   field.cluster == 3 ~ 'Grass\ndominated')) 
+
+df <- field.cluster.df %>% 
+  mutate(field.cluster = case_when(field.cluster == 1 ~ 'Shrub\ndominated',
+                                   field.cluster == 2 ~ 'Tree\ndominated',
+                                   field.cluster == 3 ~ 'Grass\ndominated')) %>% 
+  pivot_longer(cols = c(grass.pct, shrub.pct, seedling.pct, regen.density, delta_ndvi, pct_recovery, postfire_fitted_slope, relative_regrowth), values_to = 'val', names_to = 'var')
+```
+
+##### Linear Y-Axis
+```{r}
+vars <- c('delta_ndvi', 'pct_recovery', 'postfire_fitted_slope',
+                       'relative_regrowth', 'seedling.pct', 
+                       'shrub.pct', 'grass.pct')
+
+plot_list <- list()
+
+for(i in 1:length(vars)){
+text.df <- tk.field.cluster.df %>% 
+  filter(var == vars[i])
+
+plot <- df %>% 
+  filter(var == vars[[i]]) %>% 
+  ggplot(aes(x = field.cluster, y = val, color = as.factor(field.cluster))) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    geom_text(aes(x = field.cluster, y = y.val, label = label),
+              color = 'black', size = 8.5, fontface = 'bold',
+              data = text.df)  +
+    geom_text(aes(x = cluster.no, y = panel.y.val, label = panel.label),
+              color = 'black', size = 18, fontface = 'bold',
+              data = text.df)  +
+    scale_color_manual(values = c('#DDC49B', '#002F00', '#08A045')) +
+    labs(x = 'Field data cluster', y = ' ') +
+    facet_wrap(~var, scales = 'free', labeller = as_labeller(NDVIspectral_field_var_names), strip.position = 'left') +
+    theme_bw() +
+    theme(text = element_text(family = 'Arial'),
+          legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text.x = element_text(face = 'bold', size = 17),
+          axis.text.y = element_text(size = 18),
+          strip.text = element_text(face = 'bold', size = 24),
+          strip.background = element_blank(),
+          strip.placement = 'outside',
+          panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank())
+plot_list[[i]] <- plot
+}
+```
+
+##### Log-Transformed Y-Axis
+```{r}
+text.df <- tk.field.cluster.df %>% 
+  filter(var == 'regen.density')
+
+plot <- df %>% 
+  filter(var == 'regen.density') %>% 
+  ggplot(aes(x = field.cluster, y = val, color = as.factor(field.cluster))) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.8) +
+    geom_jitter(width = 0.15, alpha = 0.3) +
+    geom_text(aes(x = field.cluster, y = y.val, label = label),
+              color = 'black', size = 8.5, fontface = 'bold',
+              data = text.df)  +
+    geom_text(aes(x = cluster.no, y = panel.y.val, label = panel.label),
+              color = 'black', size = 18, fontface = 'bold',
+              data = text.df)  +
+    scale_color_manual(values = c('#DDC49B', '#002F00', '#08A045')) +
+    labs(x = 'Field Data Cluster', y = ' ') +
+    facet_wrap(~var, scales = 'free', labeller = as_labeller(NDVIspectral_field_var_names), strip.position = 'left') +
+    scale_y_continuous(trans = 'log', breaks = c(50, 1000, 20000)) +
+    theme_bw() +
+    theme(text = element_text(family = 'Arial'),
+          legend.position = 'none',
+          axis.title = element_blank(),
+          axis.text.x = element_text(face = 'bold', size = 17),
+          axis.text.y = element_text(size = 18),
+          strip.text = element_text(face = 'bold', size = 24),
+          strip.background = element_blank(),
+          strip.placement = 'outside',
+          panel.grid.minor = element_blank(),
+          panel.grid.major.x = element_blank())
+plot_list[[8]] <- plot
+
+#rm(plot, df, text.df)
+```
+
+##### Arranged
+```{r, warning = FALSE}
+field.cluster.boxplots <- cowplot::plot_grid(plot_list[[1]], plot_list[[2]], plot_list[[3]],
+                                        plot_list[[4]], plot_list[[8]], plot_list[[5]],
+                                        plot_list[[6]], plot_list[[7]], ncol = 4)
+field.cluster.boxplots
+
+#rm(plot_list)
+```
+
+### Bottom-Up Figure (Arranged)
+```{r, warning = FALSE}
+cowplot::plot_grid(field.cluster.time.series, field.cluster.boxplots, rel_heights = c(11, 9), ncol = 1)
+ggsave(here('figures', 'supp_figures', 'NDVI.bottom.up.figure.png'), width = 22, height = 24)
+```
+
+## Stats Tests
+### Clusters Diverging
+```{r}
+for(i in 9:23) {
+  df <- long.field.cluster.df %>% 
+    filter(relative_year == i)
+  mod <- lmer(yearly_delta_ndvi ~ field.cluster + (1|fire), df)
+  print(i)
+  print(emmeans(mod, pairwise ~ field.cluster, adjust = 'tukey'))
+}
+```
+
+### Diffferences Between Clusters
+```{r}
+mod <- lmer(grass.pct ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(shrub.pct ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(regen.density ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(seedling.pct ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(pct_recovery ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(relative_regrowth ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(delta_ndvi ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+
+mod <- lmer(postfire_fitted_slope ~ as.factor(field.cluster) + (1|fire), field.cluster.df)
+emmeans(mod, list(pairwise ~ field.cluster), adjust = "tukey")
+```
+
+# Writing CSV Files
+```{r}
+write_csv(field.cluster.df, file = here('data', 'processed_data', 'NDVI', 'field.cluster.df.csv'))
+write_csv(long.field.cluster.df, file = here('data', 'processed_data', 'NDVI', 'long.field.cluster.df.csv'))
+write_csv(wide.cluster.df, file = here('data', 'processed_data', 'NDVI', 'wide.cluster.df.csv'))
+```
