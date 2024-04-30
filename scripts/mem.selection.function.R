@@ -212,7 +212,7 @@ glmm.zi.selection <- function(model.call, y.var, predictors, df, mod.family, rem
   mod.list[[1]] <- glmmTMB(as.formula(model.call), data = df, family = mod.family, ziformula = ~1)
   
   for(u in 1:ncol(predictors)) {
-    mod.list[[u+1]] <- glmmTMB(as.formula(model.call), data = df, family = mod.family, ziformula = as.formula(paste0('~', colnames(glmm.predictors.spectral)[u], sep = '')))
+    mod.list[[u+1]] <- glmmTMB(as.formula(model.call), data = df, family = mod.family, ziformula = as.formula(paste0('~', colnames(predictors)[u], sep = '')))
   }
   
   # setting up a nested for loop to list all possible models including those predictors
